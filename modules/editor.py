@@ -30,12 +30,18 @@ from .engine import cv_imread, cv_imwrite
 class EditorView(tk.Frame):
     """マスター画像作成・編集ビュー（image_editor + data augmentation 統合）"""
 
-    def __init__(self, parent, config_manager):
+    def __init__(self, parent, config_manager, app=None):
         super().__init__(parent, bg=COLOR_BG_MAIN)
         self.cfg = config_manager
+        self.app = app
+        
+        # 保存先を車種フォルダに自動同期
+        self._sync_aug_paths()
+        
         self._build_ui()
 
         # 画像・履歴管理
+        self.raw_original_image = None
         self.original_image = None
         self.transformed_image = None
         self.current_image = None
@@ -85,29 +91,51 @@ class EditorView(tk.Frame):
         self.canvas.bind("<Button-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_move)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
-        self.bind_all("<MouseWheel>", self.on_mousewheel)
+        # 画像エリア上ではズームに使用
+        self.canvas.bind("<Enter>", lambda _: self.canvas.bind_all("<MouseWheel>", self.on_mousewheel))
+        self.canvas.bind("<Leave>", lambda _: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _sync_aug_paths(self):
+        """設定から現在の車種に合わせたフォルダを取得し反映する"""
+        master_folder = self.cfg.get_master_folder()
+        self.aug_src_var = tk.StringVar(value=self.cfg.get("augment", "master_dir", default=os.path.join(master_folder, "source")))
+        self.aug_out_var = tk.StringVar(value=self.cfg.get("augment", "output_dir", default=master_folder))
 
     def _build_ui(self):
         """UIの骨格を構築"""
         # ---- 左パネル（スクロール可能な設定エリア） ----
         left_outer, left_inner = create_card(self, "編集ツール")
         left_outer.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
-        left_outer.configure(width=360)
+        left_outer.configure(width=550)
         left_outer.pack_propagate(False)
 
-        ctrl_canvas = tk.Canvas(left_inner, bg=COLOR_BG_PANEL, highlightthickness=0, width=330)
+        ctrl_canvas = tk.Canvas(left_inner, bg=COLOR_BG_PANEL, highlightthickness=0, width=530)
         ctrl_sb = ttk.Scrollbar(left_inner, orient="vertical", command=ctrl_canvas.yview)
         self.ctrl_frame = tk.Frame(ctrl_canvas, bg=COLOR_BG_PANEL)
-        self.ctrl_frame.bind("<Configure>",
-                             lambda e: ctrl_canvas.configure(scrollregion=ctrl_canvas.bbox("all")))
-        ctrl_canvas.create_window((0, 0), window=self.ctrl_frame, anchor="nw")
+        
+        # キャンバス内のウィンドウIDを保持
+        self.ctrl_window = ctrl_canvas.create_window((0, 0), window=self.ctrl_frame, anchor="nw")
+        
+        def _on_frame_configure(event):
+            # フレームのサイズに合わせてスクロール領域を更新
+            ctrl_canvas.configure(scrollregion=ctrl_canvas.bbox("all"))
+        def _on_canvas_configure(event):
+            # キャンバス幅も合わせる
+            ctrl_canvas.itemconfig(self.ctrl_window, width=event.width)
+
+        self.ctrl_frame.bind("<Configure>", _on_frame_configure)
+        ctrl_canvas.bind("<Configure>", _on_canvas_configure)
         ctrl_canvas.configure(yscrollcommand=ctrl_sb.set)
         ctrl_canvas.pack(side="left", fill="both", expand=True)
         ctrl_sb.pack(side="right", fill="y")
 
         def _wheel(event):
+            # サイドバー内でのみ垂直スクロール
             ctrl_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        ctrl_canvas.bind("<MouseWheel>", _wheel)
+        
+        # サイドバー領域に入ったときだけマウスホイールをバインド
+        self.ctrl_frame.bind("<Enter>", lambda _: self.ctrl_frame.bind_all("<MouseWheel>", _wheel))
+        self.ctrl_frame.bind("<Leave>", lambda _: self.ctrl_frame.unbind_all("<MouseWheel>"))
 
         # ---- 右パネル（プレビューキャンバス） ----
         right_outer, right_inner = create_card(self, "プレビュー")
@@ -137,6 +165,9 @@ class EditorView(tk.Frame):
         tk.Button(sf, text="画像を読み込み", font=FONT_NORMAL, bg=COLOR_ACCENT,
                   fg="black", relief="flat",
                   command=self.load_image).pack(fill=tk.X, pady=3, padx=5)
+        tk.Button(sf, text="カメラから撮影", font=FONT_NORMAL, bg=COLOR_OK,
+                  fg="black", relief="flat",
+                  command=self.capture_from_camera).pack(fill=tk.X, pady=3, padx=5)
 
         mode_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         mode_f.pack(fill=tk.X, padx=5, pady=2)
@@ -243,7 +274,6 @@ class EditorView(tk.Frame):
         src_row.pack(fill=tk.X, padx=5, pady=2)
         tk.Label(src_row, text="元画像フォルダ:", font=FONT_NORMAL,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-        self.aug_src_var = tk.StringVar(value=self.cfg.get("augment", "master_dir", default="./master_image/source"))
         tk.Entry(src_row, textvariable=self.aug_src_var, font=FONT_NORMAL,
                  bg=COLOR_BG_INPUT, fg="white", bd=1, relief="solid").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         tk.Button(src_row, text="...", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
@@ -297,14 +327,32 @@ class EditorView(tk.Frame):
         f = filedialog.askopenfilename(
             filetypes=[("画像ファイル", "*.png *.jpg *.jpeg *.bmp"), ("全て", "*.*")])
         if f:
-            self.original_image = Image.open(f).convert("RGB")
+            self.raw_original_image = Image.open(f).convert("RGB")
+            self.original_image = self.raw_original_image.copy()
             self.history.clear()
             self.is_transformed = False
             self.points = []
             self.mouse_mode.set("point")
+            self.image = self.original_image.copy()
             self.save_state()
             self.update_image()
             self.get_current_size()
+
+    def capture_from_camera(self):
+        if self.app and getattr(self.app, "last_frame", None) is not None:
+            rgb = cv2.cvtColor(self.app.last_frame, cv2.COLOR_BGR2RGB)
+            self.raw_original_image = Image.fromarray(rgb)
+            self.original_image = self.raw_original_image.copy()
+            self.history.clear()
+            self.is_transformed = False
+            self.points = []
+            self.mouse_mode.set("point")
+            self.image = self.original_image.copy()
+            self.save_state()
+            self.update_image()
+            self.get_current_size()
+        else:
+            messagebox.showwarning("警告", "カメラから画像を取得できません。\nカメラが接続されているか、または待機状態か確認してください。")
 
     def save_image(self):
         if self.current_image is None:
@@ -590,6 +638,9 @@ class EditorView(tk.Frame):
             self.update_image()
 
     def reset_perspective(self):
+        # 読込直後の状態に復元
+        if self.raw_original_image:
+            self.original_image = self.raw_original_image.copy()
         self.points = []
         self.is_transformed = False
         self.transformed_image = None

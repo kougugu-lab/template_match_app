@@ -150,19 +150,25 @@ class InspectionEngine:
         return 30, 0.0
 
     def binarize(self, gray, ip):
-        """設定に従い二値化処理を実行"""
+        """設定に従い一元化された二値化処理を実行"""
         mode = ip.get("threshold_mode", "simple")
         thr = ip.get("threshold", 30)
-        if mode == "simple":
+        
+        if mode == "dynamic":
+            thr, ratio = self.dynamic_threshold(gray, ip.get("white_ratio", 3))
             _, binarized = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
-        else:
+            return binarized
+        elif mode == "adaptive":
             bs = ip.get("ada_block", 11)
             bs = bs + 1 if bs % 2 == 0 else bs
             c = ip.get("ada_c", 2)
             binarized = cv2.adaptiveThreshold(
                 gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY, bs, c)
-        return binarized
+            return binarized
+        else: # simple
+            _, binarized = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
+            return binarized
 
     # ------------------------------------------------------------------
     # 輪郭抽出・射影変換
@@ -324,10 +330,7 @@ class InspectionEngine:
         if flags.get("CLAHE_FLAG", True):
             gray = self.apply_clahe(gray)
 
-        thr = ip.get("threshold", 30)
-        if flags.get("THRESHOLD_FLAG", True):
-            thr, ratio = self.dynamic_threshold(gray, ip.get("white_ratio", 3))
-            self.logger.debug(f"動的閾値: {thr}, 白面積率: {ratio:.2f}%")
+        # 二値化の処理とログは extract_contours (経由の binarize) に集約済み。
 
         matched = []
         if flags.get("CONTOURS_FLAG", True):
@@ -349,7 +352,6 @@ class InspectionEngine:
         if not matched:
             # 輪郭なし or 射影変換スキップ: 直接マッチング
             binarized = self.binarize(gray, ip)
-            ip_mod = dict(ip, threshold=thr)
             matched, *_ = self.template_match(
                 binarized, template_paths, template_list, decision_thr)
 
@@ -408,11 +410,29 @@ class InspectionEngine:
             w, h = 1920, 1080
 
         if platform.system() == "Windows":
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            # DSHOWで致命的エラー（C++例外）を吐く環境があるための対策
+            # 1. DSHOW (MSMFよりも詳細設定が効きやすい)
+            # 2. MSMF (Windows標準、より安定)
+            # 3. CAP_ANY (インデックスのみ指定)
+            try:
+                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(idx, cv2.CAP_MSMF)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(idx)
+            except Exception:
+                try:
+                    cap = cv2.VideoCapture(idx, cv2.CAP_MSMF)
+                    if not cap.isOpened(): cap = cv2.VideoCapture(idx)
+                except Exception:
+                    cap = cv2.VideoCapture(idx)
         else:
             cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            if not cap.isOpened(): cap = cv2.VideoCapture(idx)
 
         if cap.isOpened():
+            backend_name = cap.getBackendName() if hasattr(cap, "getBackendName") else "Unknown"
+            print(f"カメラ初期化成功 (Index: {idx}, Backend: {backend_name})")
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)

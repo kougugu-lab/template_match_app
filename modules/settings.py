@@ -39,9 +39,8 @@ DEFAULT_CONFIG = {
         "decision_threshold": 0.8
     },
     "flags": {
-        "CLAHE_FLAG": True, "THRESHOLD_FLAG": True, "ADAPTIVE_FLAG": True,
-        "CONTOURS_FLAG": True, "MASK_SECOND_FLAG": True, "SIO_FLAG": True,
-        "LENGTH_FILTER_FLAG": True, "AREA_FILTER_FLAG": True,
+        "CLAHE_FLAG": True, "CONTOURS_FLAG": True, "MASK_SECOND_FLAG": True,
+        "SIO_FLAG": True, "LENGTH_FILTER_FLAG": True, "AREA_FILTER_FLAG": True,
         "SAVE_DEBUG_FLAG": False
     },
     "storage": {
@@ -78,16 +77,27 @@ class ConfigManager:
                 result[k] = v
         return result
 
+    def _clean_legacy_keys(self, data):
+        """不要になった古い設定キーを削除してクリーンな設定を保つ"""
+        if "image_processing" in data:
+            for k in ["mask_lh_up", "mask_lh_down", "mask_rh_up", "mask_rh_down", "mask_top", "mask_bottom"]:
+                data["image_processing"].pop(k, None)
+        if "flags" in data:
+            for k in ["THRESHOLD_FLAG", "ADAPTIVE_FLAG"]:
+                data["flags"].pop(k, None)
+        return data
+
     def _load(self):
         """設定ファイルを読み込む"""
         try:
             if os.path.exists(self.path):
                 with open(self.path, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                return self._deep_merge(DEFAULT_CONFIG, loaded)
+                merged = self._deep_merge(DEFAULT_CONFIG, loaded)
+                return self._clean_legacy_keys(merged)
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             print(f"設定ファイル読み込みエラー ({e})。デフォルト設定を使用します。")
-        return copy.deepcopy(DEFAULT_CONFIG)
+        return self._clean_legacy_keys(copy.deepcopy(DEFAULT_CONFIG))
 
     def save(self):
         """設定ファイルに保存（上書き前にバックアップ作成）"""

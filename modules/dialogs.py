@@ -112,14 +112,23 @@ class SettingsDialog(tk.Toplevel):
 
         # 左: 設定
         left, left_inner_wrap = create_card(pane, "カメラ設定")
-        pane.add(left, minsize=360)
+        pane.add(left, minsize=550)
         
         # Scrollable panel for camera settings
-        scroll_c = tk.Canvas(left_inner_wrap, bg=COLOR_BG_PANEL, highlightthickness=0)
+        scroll_c = tk.Canvas(left_inner_wrap, bg=COLOR_BG_PANEL, highlightthickness=0, width=530)
         vsb = ttk.Scrollbar(left_inner_wrap, orient="vertical", command=scroll_c.yview)
         left_inner = tk.Frame(scroll_c, bg=COLOR_BG_PANEL)
-        left_inner.bind("<Configure>", lambda e: scroll_c.configure(scrollregion=scroll_c.bbox("all")))
-        scroll_c.create_window((0, 0), window=left_inner, anchor="nw")
+        
+        # キャンバス内のウィンドウIDを保持
+        win_id = scroll_c.create_window((0, 0), window=left_inner, anchor="nw")
+        
+        def _on_frame_cfg(event):
+            scroll_c.configure(scrollregion=scroll_c.bbox("all"))
+        def _on_canvas_cfg(event):
+            scroll_c.itemconfig(win_id, width=event.width)
+
+        left_inner.bind("<Configure>", _on_frame_cfg)
+        scroll_c.bind("<Configure>", _on_canvas_cfg)
         scroll_c.configure(yscrollcommand=vsb.set)
         scroll_c.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
@@ -135,7 +144,7 @@ class SettingsDialog(tk.Toplevel):
                    font=FONT_SET_VAL, bg=COLOR_BG_INPUT, fg="white",
                    buttonbackground="#78909C", bd=1, relief="solid", width=8,
                    command=self._mark_changed).grid(row=0, column=1, padx=10, pady=5)
-        tk.Button(row_f, text="自動", font=FONT_NORMAL, bg="#455A64", fg="white", relief="flat", padx=8,
+        tk.Button(row_f, text="自動探索", font=FONT_NORMAL, bg="#455A64", fg="white", relief="flat", padx=8,
                   command=self._search_cameras).grid(row=0, column=2, padx=(0, 10), pady=5)
         
         # --- 全項目自動設定ボタン ---
@@ -202,7 +211,7 @@ class SettingsDialog(tk.Toplevel):
             
             if k in ("focus", "wb_temp", "hue", "exposure"):
                 action = self._auto_search_exposure if k == "exposure" else lambda key=k: self._auto_tune_prop(key)
-                tk.Button(props_f, text="自動", font=FONT_NORMAL, bg="#455A64", fg="white", relief="flat", padx=8,
+                tk.Button(props_f, text="自動探索", font=FONT_NORMAL, bg="#455A64", fg="white", relief="flat", padx=8,
                           command=action).grid(row=r, column=2, padx=(0, 10), pady=2)
             
             r += 1
@@ -237,7 +246,21 @@ class SettingsDialog(tk.Toplevel):
             found = []
             for i in range(5):
                 if platform.system() == "Windows":
-                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                    try:
+                        # 1. DSHOW
+                        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                        if not cap.isOpened():
+                            # 2. MSMF
+                            cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
+                        if not cap.isOpened():
+                            # 3. CAP_ANY
+                            cap = cv2.VideoCapture(i)
+                    except Exception:
+                        try:
+                            cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
+                            if not cap.isOpened(): cap = cv2.VideoCapture(i)
+                        except Exception:
+                            cap = cv2.VideoCapture(i)
                 else:
                     cap = cv2.VideoCapture(i)
                 if cap.isOpened():
@@ -263,7 +286,11 @@ class SettingsDialog(tk.Toplevel):
         self._preview_running = True
         idx = self.cam_idx_var.get()
         if platform.system() == "Windows":
-            self._preview_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            try:
+                self._preview_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                if not self._preview_cap.isOpened(): self._preview_cap = cv2.VideoCapture(idx)
+            except Exception:
+                self._preview_cap = cv2.VideoCapture(idx)
         else:
             self._preview_cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
         self._preview_thread = threading.Thread(
@@ -578,7 +605,7 @@ class SettingsDialog(tk.Toplevel):
 
     def show_gpio_map(self, parent):
         """Raspberry Pi 40ピンヘッダのマップを表示する（クリックでピン番号入力）"""
-        outer, inner = create_card(parent, "Pi 40Pin Map")
+        outer, inner = create_card(parent, "Pi 40ピン配置図")
         outer.pack(fill=tk.BOTH, expand=True)
 
         def _on_pin_clicked(bcm_val):
@@ -663,14 +690,21 @@ class SettingsDialog(tk.Toplevel):
 
         # 左: スライダー群
         left, left_inner = create_card(pane, "画像処理パラメータ")
-        pane.add(left, minsize=400)
+        pane.add(left, minsize=550)
 
-        ctrl_canvas = tk.Canvas(left_inner, bg=COLOR_BG_PANEL, highlightthickness=0)
+        ctrl_canvas = tk.Canvas(left_inner, bg=COLOR_BG_PANEL, highlightthickness=0, width=530)
         vsb = ttk.Scrollbar(left_inner, orient="vertical", command=ctrl_canvas.yview)
         self.adj_sf = tk.Frame(ctrl_canvas, bg=COLOR_BG_PANEL)
-        self.adj_sf.bind("<Configure>",
-                         lambda e: ctrl_canvas.configure(scrollregion=ctrl_canvas.bbox("all")))
-        ctrl_canvas.create_window((0, 0), window=self.adj_sf, anchor="nw")
+        
+        win_id = ctrl_canvas.create_window((0, 0), window=self.adj_sf, anchor="nw")
+        
+        def _on_frame_cfg(event):
+            ctrl_canvas.configure(scrollregion=ctrl_canvas.bbox("all"))
+        def _on_canvas_cfg(event):
+            ctrl_canvas.itemconfig(win_id, width=event.width)
+
+        self.adj_sf.bind("<Configure>", _on_frame_cfg)
+        ctrl_canvas.bind("<Configure>", _on_canvas_cfg)
         ctrl_canvas.configure(yscrollcommand=vsb.set)
         ctrl_canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
@@ -739,7 +773,7 @@ class SettingsDialog(tk.Toplevel):
         self.thr_mode_var = tk.StringVar(value=ip.get("threshold_mode", "simple"))
         mode_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         mode_f.pack(fill=tk.X, padx=10, pady=2)
-        for txt, val in [("Simple固定閾値", "simple"), ("適応二値化", "adaptive")]:
+        for txt, val in [("Simple固定閾値", "simple"), ("適応局所閾値", "adaptive"), ("動的ヒストグラム", "dynamic")]:
             tk.Radiobutton(mode_f, text=txt, variable=self.thr_mode_var, value=val,
                            font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
                            selectcolor=COLOR_BG_INPUT,
@@ -749,23 +783,29 @@ class SettingsDialog(tk.Toplevel):
         self.v_ada_block = tk.IntVar(value=ip.get("ada_block", 11))
         self.v_ada_c = tk.IntVar(value=ip.get("ada_c", 2))
         self.v_white_ratio = tk.IntVar(value=ip.get("white_ratio", 3))
-        slider("Simple閾値", self.v_threshold, 0, 255,
-               tooltip="Simple固定二値化のしきい値。背景と対象を分ける輝度境界。")
-        slider("Ada Block", self.v_ada_block, 3, 99, 2,
-               tooltip="適応二値化の計算範囲サイズ。局所的な明暗に対応します。")
-        slider("Ada C", self.v_ada_c, -30, 30,
-               tooltip="適応二値化で算出されたしきい値から差し引く定数。")
-        slider("白面積率(%)", self.v_white_ratio, 1, 100,
-               tooltip="動的しきい値(Histogram)で目標とするワークの白面積比率。")
+        slider("固定二値化しきい値", self.v_threshold, 0, 255,
+               tooltip="固定モード時の境界輝度値。背景と対象を分ける明るさの境界。")
+        slider("適応ブロックサイズ", self.v_ada_block, 3, 99, 2,
+               tooltip="適応モードの計算範囲。光のムラが激しい場合に有効です。")
+        slider("適応定数C", self.v_ada_c, -30, 30,
+               tooltip="算出されたしきい値から差し引く値。多いほど白くなります。")
+        slider("目標白面積率(%)", self.v_white_ratio, 1, 100,
+               tooltip="ヒストグラム(動的)モードで目標とする白ピクセルの比率。")
 
         section("輪郭フィルタ")
         learn_btn_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         learn_btn_f.pack(fill=tk.X, padx=10, pady=2)
-        btn_learn = tk.Button(learn_btn_f, text="現在のワークから自動学習 (面積・周長)", font=FONT_NORMAL,
-                   bg=COLOR_OK, fg="black", relief="flat",
+        btn_learn = tk.Button(learn_btn_f, text="現在のワークから自動学習 (面積・周長のみ)", font=FONT_NORMAL,
+                   bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat",
                    command=self._auto_learn_contours)
-        btn_learn.pack(side=tk.LEFT)
-        Tooltip(btn_learn, "プレビューに映っている最大の輪郭を計測し、フィルタ範囲を自動設定します。")
+        btn_learn.pack(side=tk.LEFT, padx=2)
+        Tooltip(btn_learn, "現在の二値化設定のまま、映っている最大の輪郭を計測してフィルタ範囲を更新します。")
+
+        btn_auto_all = tk.Button(learn_btn_f, text="画像処理設定を全自動調整 (推奨)", font=FONT_BOLD,
+                    bg=COLOR_OK, fg="black", relief="flat",
+                    command=self._auto_tune_image_processing)
+        btn_auto_all.pack(side=tk.LEFT, padx=5)
+        Tooltip(btn_auto_all, "二値化モードからしきい値、フィルタまで、現在の映像に最適な設定を自動的に探し出します。")
 
         self.v_min_len = tk.IntVar(value=ip.get("filter_min_len", 200))
         self.v_max_len = tk.IntVar(value=ip.get("filter_max_len", 1500))
@@ -791,7 +831,11 @@ class SettingsDialog(tk.Toplevel):
         self._stop_adj_preview()
         idx = self.cfg.get("camera", "index", default=0)
         if platform.system() == "Windows":
-            self._adj_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            try:
+                self._adj_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                if not self._adj_cap.isOpened(): self._adj_cap = cv2.VideoCapture(idx)
+            except Exception:
+                self._adj_cap = cv2.VideoCapture(idx)
         else:
             self._adj_cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
         self._adj_preview_running = True
@@ -927,17 +971,125 @@ class SettingsDialog(tk.Toplevel):
 
         gray = cv2.cvtColor(preview, cv2.COLOR_BGR2GRAY)
         mode = self.thr_mode_var.get()
-        if mode == "simple":
-            thr = self.v_threshold.get()
+        if mode == "dynamic":
+            # Dynamic calculation locally for preview
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+            total = gray.size
+            ratio = self.v_white_ratio.get()
+            t_min = int(total * (ratio / 100.0))
+            t_max = int(total * ((ratio + 1.0) / 100.0))
+            c = 0
+            thr = 30
+            for i in range(255, -1, -1):
+                c += hist[i][0]
+                thr = max(0, i - 1)
+                if t_min <= c <= t_max or c > t_max:
+                    break
             _, binarized = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
-        else:
+        elif mode == "adaptive":
             bs = self.v_ada_block.get()
             bs = bs + 1 if bs % 2 == 0 else bs
             binarized = cv2.adaptiveThreshold(
                 gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY, bs, self.v_ada_c.get())
+        else: # simple
+            thr = self.v_threshold.get()
+            _, binarized = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
 
         return cv2.cvtColor(binarized, cv2.COLOR_GRAY2BGR)
+
+    def _auto_tune_image_processing(self):
+        """二値化モードを含め、画像処理設定を全自動で最適化する"""
+        if getattr(self, '_adj_current_frame', None) is None:
+            messagebox.showwarning("警告", "プレビューを開始してください。")
+            return
+
+        with self._frame_lock:
+            frame = self._adj_current_frame.copy()
+        
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # アルゴリズム: 
+        # 1. 動的(Histogram)モード 3% ~ 10% をテスト
+        # 2. Simple(固定)モード 30 ~ 150 をテスト
+        # 3. 最も大きく、かつ極端に大きすぎない輪郭が見つかる設定を採用する
+        
+        candidates = []
+        
+        # Test Dynamic
+        for wr in [3, 5, 8]:
+            # engine.dynamic_threshold 相当の計算
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+            total = gray.size
+            t_min = int(total * (wr / 100.0))
+            t_max = int(total * ((wr + 1.0) / 100.0))
+            c = 0 ; thr = 30
+            for i in range(255, -1, -1):
+                c += hist[i][0]
+                thr = max(0, i - 1)
+                if t_min <= c <= t_max or c > t_max: break
+            _, b = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
+            cnts, _ = cv2.findContours(b, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts:
+                largest = max(cnts, key=cv2.contourArea)
+                candidates.append({
+                    "mode": "dynamic", "wr": wr, "thr": thr,
+                    "area": cv2.contourArea(largest), "len": cv2.arcLength(largest, True)
+                })
+
+        # Test Simple
+        for thr in [30, 50, 70, 100, 130]:
+            _, b = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
+            cnts, _ = cv2.findContours(b, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts:
+                largest = max(cnts, key=cv2.contourArea)
+                candidates.append({
+                    "mode": "simple", "thr": thr,
+                    "area": cv2.contourArea(largest), "len": cv2.arcLength(largest, True)
+                })
+
+        if not candidates:
+            messagebox.showerror("エラー", "ワークが見つかりません。ライティングやカメラ位置を確認してください。")
+            return
+
+        # 「画面の5%〜60%を占める最大の輪郭」を優先
+        best = None
+        for c in sorted(candidates, key=lambda x: x["area"], reverse=True):
+            if 0.05 * gray.size < c["area"] < 0.6 * gray.size:
+                best = c
+                break
+        
+        if not best:
+            best = max(candidates, key=lambda x: x["area"])
+
+        # 設定の反映
+        self.thr_mode_var.set(best["mode"])
+        if best["mode"] == "dynamic":
+            self.v_white_ratio.set(best["wr"])
+        else:
+            self.v_threshold.set(best["thr"])
+            
+        # フィルタ値の決定 (基準解像度 640x480 スケール)
+        adj_sw = w / 640.0
+        adj_sh = h / 480.0
+        adj_area = adj_sw * adj_sh
+        adj_len = np.sqrt((adj_sw ** 2 + adj_sh ** 2) / 2.0)
+        
+        base_area = best["area"] / adj_area
+        base_len = best["len"] / adj_len
+        
+        self.v_min_area.set(int(base_area * 0.6))
+        self.v_max_area.set(int(base_area * 1.5))
+        self.v_min_len.set(int(base_len * 0.7))
+        self.v_max_len.set(int(base_len * 1.4))
+        
+        self._mark_changed()
+        messagebox.showinfo("自動設定完了", 
+            f"最適な設定を適用しました。\n\n"
+            f"モード: { '動的(Histogram)' if best['mode']=='dynamic' else '固定閾値' }\n"
+            f"閾値/白面積: { best['wr'] if best['mode']=='dynamic' else best['thr'] }\n"
+            f"基準面積: {int(base_area)}")
 
     def _auto_learn_contours(self):
         """現在のプレビューから輪郭の面積・周長を計測し、フィルタ値を自動設定する"""
@@ -1125,8 +1277,6 @@ class SettingsDialog(tk.Toplevel):
 
         flag_descriptions = {
             "CLAHE_FLAG": ("輝度正規化 (CLAHE)", "画像全体の明暗を平均化し、ライティングのムラを抑えます。"),
-            "THRESHOLD_FLAG": ("動的二値化", " Histogram解析に基づき、目標白面積率になるよう閾値を自動調整します。"),
-            "ADAPTIVE_FLAG": ("適応二値化モード", "周辺画素の平均をもとに輝度境界を決定します。"),
             "CONTOURS_FLAG": ("輪郭抽出・射影変換", "ワークの輪郭を見つけ、正面を向くように幾何変換します。"),
             "MASK_SECOND_FLAG": ("2回目トライ", "1回目で失敗した場合にマスク条件を緩めて再試行します。"),
             "SIO_FLAG": ("SiO信号待ち", "GPIOからのトリガー信号が入るまで、メインループを停止させます。"),

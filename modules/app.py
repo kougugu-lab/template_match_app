@@ -229,7 +229,7 @@ class TMApp:
         self._build_inspection_view()
 
         # エディタビュー
-        self.editor_view = EditorView(self.content_area, self.cfg)
+        self.editor_view = EditorView(self.content_area, self.cfg, app=self)
 
     def _build_inspection_view(self):
         """検査モード用ビュー（カメラプレビュー + 操作パネル）"""
