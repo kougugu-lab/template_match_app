@@ -1,0 +1,7 @@
+__pycache__/
+modules/__pycache__/
+old/
+results/
+master_image/
+TM_app/
+config.json
