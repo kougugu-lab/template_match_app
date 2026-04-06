@@ -120,10 +120,62 @@ class InspectionEngine:
         cv2.rectangle(mask, (max(0, x1), max(0, y1)), (min(w, x2), min(h, y2)), 255, -1)
         return cv2.bitwise_and(image, image, mask=mask)
 
-    def apply_clahe(self, gray):
-        """輝度正規化 (CLAHE)"""
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(10, 10))
-        return clahe.apply(gray)
+    def apply_preprocessing(self, image, ip):
+        """設定に基づき各種画像補正を適用 (OpenCV)"""
+        # --- カラー補正 (HSV/LAB空間などでの処理) ---
+        # 引数がグレースケールの場合はBGRに変換して処理（後でLに戻す）
+        is_gray = (len(image.shape) == 2)
+        if is_gray:
+            proc = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            proc = image.copy()
+
+        # 1. CLAHE (輝度正規化) - LAB空間で行う
+        clahe_clip = ip.get("clahe_clip", 0.0)
+        if clahe_clip > 0:
+            lab = cv2.cvtColor(proc, cv2.COLOR_BGR2LAB)
+            clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
+            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+            proc = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+        # 2. 明るさ・コントラスト
+        # PILの方式に合わせる: Brightness=factor, Contrast=factor
+        # Brightness: 1.0 = 原画
+        b_factor = ip.get("brightness", 1.0)
+        c_factor = ip.get("contrast", 1.0)
+        if b_factor != 1.0 or c_factor != 1.0:
+            # f(x) = c * x + (b-1)*128 (簡易的な近似)
+            # より詳細には PIL の ImageEnhance と同様の挙動を目指す
+            proc = cv2.convertScaleAbs(proc, alpha=c_factor, beta=(b_factor - 1.0) * 128)
+
+        # 3. 彩度
+        s_factor = ip.get("saturation", 1.0)
+        if s_factor != 1.0 and not is_gray:
+            hsv = cv2.cvtColor(proc, cv2.COLOR_BGR2HSV).astype(np.float32)
+            hsv[:, :, 1] *= s_factor
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+            proc = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # 4. ガンマ補正
+        g_val = ip.get("gamma", 1.0)
+        if g_val != 1.0:
+            lut = np.array([pow(i / 255.0, 1.0 / g_val) * 255 for i in range(256)]).astype(np.uint8)
+            proc = cv2.LUT(proc, lut)
+
+        # 5. ぼかし
+        blur_val = ip.get("blur", 0.0)
+        if blur_val > 0:
+            k = int(blur_val * 2) * 2 + 1
+            proc = cv2.GaussianBlur(proc, (k, k), 0)
+
+        # 6. シャープネス
+        sharp_val = ip.get("sharpen", 0.0)
+        if sharp_val > 0:
+            kernel = np.array([[-1, -1, -1], [-1, 9 + sharp_val, -1], [-1, -1, -1]])
+            proc = cv2.filter2D(proc, -1, kernel)
+
+        # 最終的にグレースケールを返す（エンジン内の後続処理がグレー前提のため）
+        return cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
 
     def dynamic_threshold(self, gray, white_ratio):
         """ヒストグラムを用いて目標白面積比率からの閾値をO(1)で決定"""
@@ -325,10 +377,8 @@ class InspectionEngine:
         cv2.imwrite(self._path("debug/gray", "_raw"), frame)
 
         proc = self.apply_mask(frame.copy(), adj_sw, adj_sh, ip)
-        gray = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
-
-        if flags.get("CLAHE_FLAG", True):
-            gray = self.apply_clahe(gray)
+        # 共通前処理の適用 (明るさ・コントラスト・CLAHE等)
+        gray = self.apply_preprocessing(proc, ip)
 
         # 二値化の処理とログは extract_contours (経由の binarize) に集約済み。
 

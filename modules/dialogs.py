@@ -91,7 +91,7 @@ class SettingsDialog(tk.Toplevel):
                                   fg=COLOR_TEXT_MAIN, relief="flat", width=18,
                                   command=self._on_save)
         self.btn_save.pack(side=tk.RIGHT, padx=5)
-        Tooltip(self.btn_save, "全ての変更を確定して保存し、メイン画面に反映します（変更時は緑色に強調されます）")
+        Tooltip(self.btn_save, "全ての変更を確定して保存し、メイン画面に反映します")
 
         btn_cncl = tk.Button(btn_bar, text="キャンセル", font=FONT_BOLD, bg=COLOR_BG_INPUT,
                    fg=COLOR_TEXT_MAIN, relief="flat", width=12,
@@ -467,7 +467,7 @@ class SettingsDialog(tk.Toplevel):
         left_f = tk.Frame(tab, bg=COLOR_BG_MAIN)
         left_f.grid(row=0, column=0, sticky="nsew", padx=5, pady=10)
 
-        outer, inner = create_card(left_f, "GPIOピン設定 (BCM番号)")
+        outer, inner = create_card(left_f, "GPIOピン設定")
         outer.pack(fill=tk.BOTH, expand=True)
 
         scroll_c = tk.Canvas(inner, bg=COLOR_BG_PANEL, highlightthickness=0)
@@ -515,13 +515,13 @@ class SettingsDialog(tk.Toplevel):
         sep.grid(row=start_row, column=0, columnspan=3,
                  sticky="ew", padx=5, pady=15)
 
-        tk.Label(parent, text="仕様マッピング (仕様ID → ピン番号・名前)",
+        tk.Label(parent, text="仕様マッピング",
                  font=FONT_SET_LBL, bg=COLOR_BG_PANEL, fg=COLOR_ACCENT).grid(
             row=start_row + 1, column=0, columnspan=3, padx=15, pady=(0, 8), sticky="w")
 
         hdr = tk.Frame(parent, bg=COLOR_BG_PANEL)
         hdr.grid(row=start_row + 2, column=0, columnspan=3, padx=15, sticky="w")
-        for txt, w in [("仕様ID", 10), ("名前", 12), ("使用ピン (カンマ区切り)", 25)]:
+        for txt, w in [("仕様ID", 10), ("名前", 12), ("使用ピン", 25)]:
             tk.Label(hdr, text=txt, font=FONT_BOLD, bg=COLOR_BG_PANEL,
                      fg=COLOR_TEXT_SUB, width=w, anchor="w").pack(side=tk.LEFT)
 
@@ -740,6 +740,27 @@ class SettingsDialog(tk.Toplevel):
                                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
         self.adj_white_lbl.pack(side=tk.RIGHT, padx=10)
 
+        # モード連動用のスライダー保持用
+        self.bin_widgets = {}
+
+    def _update_thr_ui(self, *args):
+        """二値化モードに応じてスライダーの有効・無効を切り替える"""
+        mode = self.thr_mode_var.get()
+        # 有効にする項目の定義
+        targets = {
+            "simple": ["threshold"],
+            "adaptive": ["ada_block", "ada_c"],
+            "dynamic": ["white_ratio"]
+        }
+        active = targets.get(mode, [])
+        for name, w_list in self.bin_widgets.items():
+            state = tk.NORMAL if name in active else tk.DISABLED
+            for w in w_list:
+                try:
+                    w.config(state=state)
+                except tk.TclError:
+                    pass
+
     def _build_adjust_sliders(self):
         sf = self.adj_sf
 
@@ -749,7 +770,7 @@ class SettingsDialog(tk.Toplevel):
                 fill=tk.X, pady=(12, 2))
             tk.Frame(sf, bg=COLOR_BORDER, height=1).pack(fill=tk.X, padx=5, pady=2)
 
-        def slider(lbl, var, frm, to, res=1, tooltip=""):
+        def slider(lbl, var, frm, to, res=1, tip="", tooltip=""):
             f = tk.Frame(sf, bg=COLOR_BG_PANEL)
             f.pack(fill=tk.X, padx=10, pady=2)
             tk.Label(f, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
@@ -761,19 +782,48 @@ class SettingsDialog(tk.Toplevel):
                          activebackground=COLOR_ACCENT,
                          command=lambda _: self._mark_changed())
             s.pack(fill=tk.X, side=tk.LEFT, expand=True)
-            if tooltip:
-                Tooltip(s, tooltip)
+            msg = tip or tooltip
+            if msg:
+                Tooltip(s, msg)
             return s
 
         ip = self.cfg.data.get("image_processing", {})
 
-        section("二値化設定")
+
+        section("1. 前処理設定")
+        self.v_clahe = tk.DoubleVar(value=ip.get("clahe_clip", 0.0))
+        self.v_bright = tk.DoubleVar(value=ip.get("brightness", 1.0))
+        self.v_contrast = tk.DoubleVar(value=ip.get("contrast", 1.0))
+        self.v_saturation = tk.DoubleVar(value=ip.get("saturation", 1.0))
+        self.v_gamma = tk.DoubleVar(value=ip.get("gamma", 1.0))
+        self.v_blur = tk.DoubleVar(value=ip.get("blur", 0.0))
+        self.v_sharp = tk.DoubleVar(value=ip.get("sharpen", 0.0))
+
+        slider("輝度正規化", self.v_clahe, 0.0, 5.0, 0.1, tip="コントラストを均一化し、影や反射の影響を抑えます。")
+        slider("明るさ", self.v_bright, 0.1, 3.0, 0.05, tip="画像全体の明るさを調整します。")
+        slider("コントラスト", self.v_contrast, 0.1, 3.0, 0.05, tip="明暗の差を強調します。")
+        slider("彩度", self.v_saturation, 0.1, 3.0, 0.05, tip="色の鮮やかさを変えます。")
+        slider("ガンマ", self.v_gamma, 0.1, 5.0, 0.05, tip="中間色の明るさを補正します。")
+        slider("ぼかし", self.v_blur, 0.0, 5.0, 0.1, tip="ノイズを低減します。")
+        slider("シャープ", self.v_sharp, 0.0, 5.0, 0.1, tip="輪郭を強調します。")
+
+        section("2. 検査領域の設定")
+        tk.Label(sf, text="※右側のプレビュー画面でマウスをドラッグし、\n  検査をおこなう範囲（黄色枠）を指定してください。",
+                 font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, justify=tk.LEFT).pack(anchor="w", padx=15, pady=5)
+
+        section("3. 二値化設定")
+        btn_auto_all = tk.Button(sf, text="AI全自動調整", font=FONT_BOLD,
+                    bg=COLOR_OK, fg="black", relief="flat",
+                    command=self._auto_tune_image_processing)
+        btn_auto_all.pack(fill=tk.X, padx=10, pady=5)
+        Tooltip(btn_auto_all, "二値化モードからしきい値、フィルタまで全てを自動走査して最適な処理を探します。")
+
         tk.Label(sf, text="二値化モード:", font=FONT_NORMAL,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(anchor="w", padx=10)
         self.thr_mode_var = tk.StringVar(value=ip.get("threshold_mode", "simple"))
         mode_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         mode_f.pack(fill=tk.X, padx=10, pady=2)
-        for txt, val in [("Simple固定閾値", "simple"), ("適応局所閾値", "adaptive"), ("動的ヒストグラム", "dynamic")]:
+        for txt, val in [("Simple固定", "simple"), ("適応局所", "adaptive"), ("動的ヒストグラム", "dynamic")]:
             tk.Radiobutton(mode_f, text=txt, variable=self.thr_mode_var, value=val,
                            font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
                            selectcolor=COLOR_BG_INPUT,
@@ -783,49 +833,56 @@ class SettingsDialog(tk.Toplevel):
         self.v_ada_block = tk.IntVar(value=ip.get("ada_block", 11))
         self.v_ada_c = tk.IntVar(value=ip.get("ada_c", 2))
         self.v_white_ratio = tk.IntVar(value=ip.get("white_ratio", 3))
-        slider("固定二値化しきい値", self.v_threshold, 0, 255,
-               tooltip="固定モード時の境界輝度値。背景と対象を分ける明るさの境界。")
-        slider("適応ブロックサイズ", self.v_ada_block, 3, 99, 2,
-               tooltip="適応モードの計算範囲。光のムラが激しい場合に有効です。")
-        slider("適応定数C", self.v_ada_c, -30, 30,
-               tooltip="算出されたしきい値から差し引く値。多いほど白くなります。")
-        slider("目標白面積率(%)", self.v_white_ratio, 1, 100,
-               tooltip="ヒストグラム(動的)モードで目標とする白ピクセルの比率。")
 
-        section("輪郭フィルタ")
+        # スライダーとラベルをセットで保持
+        f_thr, s_thr = self._slider_with_label(sf, "固定しきい値", self.v_threshold, 0, 255, tip="Simpleモード時：対象を浮き上がらせる境界の明るさ。")
+        f_ada_b, s_ada_b = self._slider_with_label(sf, "適応ブロック", self.v_ada_block, 3, 99, 2, tip="Adaptiveモード時：明るさを計算する範囲（奇数指定）。")
+        f_ada_c, s_ada_c = self._slider_with_label(sf, "適応定数C", self.v_ada_c, -30, 30, tip="Adaptiveモード時：しきい値からの微調整オフセット。")
+        f_white, s_white = self._slider_with_label(sf, "目標白面積率(%)", self.v_white_ratio, 1, 100, tip="動的ヒストグラムモード時：白くしたい部分の割合。")
+
+        self.bin_widgets = {
+            "threshold": [s_thr],
+            "ada_block": [s_ada_b],
+            "ada_c": [s_ada_c],
+            "white_ratio": [s_white]
+        }
+
+
+
+        # 変数監視の開始
+        self.thr_mode_var.trace_add("write", self._update_thr_ui)
+        self._update_thr_ui() # 初期状態反映
+
+        section("4. 対象抽出設定")
         learn_btn_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         learn_btn_f.pack(fill=tk.X, padx=10, pady=2)
-        btn_learn = tk.Button(learn_btn_f, text="現在のワークから自動学習 (面積・周長のみ)", font=FONT_NORMAL,
+        btn_learn = tk.Button(learn_btn_f, text="現在の映像から自動学習", font=FONT_NORMAL,
                    bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat",
                    command=self._auto_learn_contours)
-        btn_learn.pack(side=tk.LEFT, padx=2)
-        Tooltip(btn_learn, "現在の二値化設定のまま、映っている最大の輪郭を計測してフィルタ範囲を更新します。")
+        btn_learn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
+        Tooltip(btn_learn, "現在の二値化結果から最大の輪郭を計測し、面積・周長のフィルタ範囲を自動設定します。")
 
-        btn_auto_all = tk.Button(learn_btn_f, text="画像処理設定を全自動調整 (推奨)", font=FONT_BOLD,
-                    bg=COLOR_OK, fg="black", relief="flat",
-                    command=self._auto_tune_image_processing)
-        btn_auto_all.pack(side=tk.LEFT, padx=5)
-        Tooltip(btn_auto_all, "二値化モードからしきい値、フィルタまで、現在の映像に最適な設定を自動的に探し出します。")
+
 
         self.v_min_len = tk.IntVar(value=ip.get("filter_min_len", 200))
         self.v_max_len = tk.IntVar(value=ip.get("filter_max_len", 1500))
         self.v_min_area = tk.IntVar(value=ip.get("filter_min_area", 10000))
         self.v_max_area = tk.IntVar(value=ip.get("filter_max_area", 35000))
-        slider("最小周長", self.v_min_len, 0, 5000, 10, tooltip="これより短い輪郭はノイズとして無視します。")
-        slider("最大周長", self.v_max_len, 0, 10000, 10, tooltip="これより長い輪郭は無視します。")
-        slider("最小面積", self.v_min_area, 0, 100000, 100, tooltip="これより小さい面積の輪郭は無視します。")
-        slider("最大面積", self.v_max_area, 0, 500000, 100, tooltip="これより大きい面積の輪郭は無視します。")
+        slider("最小周長", self.v_min_len, 0, 5000, 10, tooltip="これより短い小さい輪郭（ノイズ）を無視します。")
+        slider("最大周長", self.v_max_len, 0, 10000, 10, tooltip="大きすぎる輪郭を無視します。")
+        slider("最小面積", self.v_min_area, 0, 100000, 100, tooltip="これより小さい面積を無視します。")
+        slider("最大面積", self.v_max_area, 0, 500000, 100, tooltip="大きすぎる面積を無視します。")
 
-        section("射影変換")
+        section("5. 形状補正")
         self.v_affine_h = tk.IntVar(value=ip.get("affine_h_mm", 50))
         self.v_affine_w = tk.IntVar(value=ip.get("affine_w_mm", 40))
-        slider("変換高さ(mm)", self.v_affine_h, 1, 200, tooltip="切り出し後の垂直方向の実寸(mm)目安。")
+        slider("変換高さ(mm)", self.v_affine_h, 1, 200, tooltip="切り出し後の垂直方向の実寸(mm)目安。縦横比を正しく補正します。")
         slider("変換幅(mm)", self.v_affine_w, 1, 200, tooltip="切り出し後の水平方向の実寸(mm)目安。")
 
-        section("マッチング閾値")
+        section("6. マッチング設定")
         self.v_decision_thr = tk.DoubleVar(value=ip.get("decision_threshold", 0.8))
-        slider("判定閾値", self.v_decision_thr, 0.0, 1.0, 0.01,
-               tooltip="テンプレートマッチングの類似度スコアがこの値を上回れば『一致(OK)』と判定します。")
+        slider("マッチング判定値", self.v_decision_thr, 0.0, 1.0, 0.01,
+               tooltip="マスター画像との類似度（スコア）がこの値を上回れば『一致(OK)』と判定します。")
 
     def _start_adj_preview(self):
         self._stop_adj_preview()
@@ -952,50 +1009,40 @@ class SettingsDialog(tk.Toplevel):
                 self._mark_changed()
 
     def _apply_preview_processing(self, frame):
-        """調整タブのスライダー設定を適用したフレームを返す"""
+        """調整タブの設定を適用したプレビュー用フレームを返す (engine.pyとロジックを同期)"""
+        ip = {
+            "clahe_clip": self.v_clahe.get(),
+            "brightness": self.v_bright.get(),
+            "contrast": self.v_contrast.get(),
+            "saturation": self.v_saturation.get(),
+            "gamma": self.v_gamma.get(),
+            "blur": self.v_blur.get(),
+            "sharpen": self.v_sharp.get(),
+            "threshold": self.v_threshold.get(),
+            "threshold_mode": self.thr_mode_var.get(),
+            "ada_block": self.v_ada_block.get(),
+            "ada_c": self.v_ada_c.get(),
+            "white_ratio": self.v_white_ratio.get(),
+        }
+        
+        # 共通エンジンの前処理を適用
+        from .engine import InspectionEngine
+        dummy_engine = InspectionEngine(self.cfg) # 最小限のインスタンス
+        gray = dummy_engine.apply_preprocessing(frame.copy(), ip)
+        
+        # ROIマスク適用
         h, w = frame.shape[:2]
-        preview = frame.copy()
-
-        # ROI適用 (範囲外を黒く塗りつぶす)
         roi = self.cfg.data.get("image_processing", {}).get("roi", [0.0, 0.0, 1.0, 1.0])
         rx1, ry1, rx2, ry2 = roi
-        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        
-        cx1 = int(min(rx1, rx2) * w)
-        cy1 = int(min(ry1, ry2) * h)
-        cx2 = int(max(rx1, rx2) * w)
-        cy2 = int(max(ry1, ry2) * h)
-        
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cx1, cy1 = int(min(rx1, rx2) * w), int(min(ry1, ry2) * h)
+        cx2, cy2 = int(max(rx1, rx2) * w), int(max(ry1, ry2) * h)
         cv2.rectangle(mask, (max(0, cx1), max(0, cy1)), (min(w, cx2), min(h, cy2)), 255, -1)
-        preview = cv2.bitwise_and(preview, preview, mask=mask)
+        gray = cv2.bitwise_and(gray, gray, mask=mask)
 
-        gray = cv2.cvtColor(preview, cv2.COLOR_BGR2GRAY)
-        mode = self.thr_mode_var.get()
-        if mode == "dynamic":
-            # Dynamic calculation locally for preview
-            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-            total = gray.size
-            ratio = self.v_white_ratio.get()
-            t_min = int(total * (ratio / 100.0))
-            t_max = int(total * ((ratio + 1.0) / 100.0))
-            c = 0
-            thr = 30
-            for i in range(255, -1, -1):
-                c += hist[i][0]
-                thr = max(0, i - 1)
-                if t_min <= c <= t_max or c > t_max:
-                    break
-            _, binarized = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
-        elif mode == "adaptive":
-            bs = self.v_ada_block.get()
-            bs = bs + 1 if bs % 2 == 0 else bs
-            binarized = cv2.adaptiveThreshold(
-                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, bs, self.v_ada_c.get())
-        else: # simple
-            thr = self.v_threshold.get()
-            _, binarized = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
-
+        # 二値化
+        binarized = dummy_engine.binarize(gray, ip)
+        
         return cv2.cvtColor(binarized, cv2.COLOR_GRAY2BGR)
 
     def _auto_tune_image_processing(self):
@@ -1276,13 +1323,12 @@ class SettingsDialog(tk.Toplevel):
         grid_f.pack(fill=tk.X, pady=5)
 
         flag_descriptions = {
-            "CLAHE_FLAG": ("輝度正規化 (CLAHE)", "画像全体の明暗を平均化し、ライティングのムラを抑えます。"),
-            "CONTOURS_FLAG": ("輪郭抽出・射影変換", "ワークの輪郭を見つけ、正面を向くように幾何変換します。"),
+            "CONTOURS_FLAG": ("輪郭抽出・形状補正", "ワークの輪郭を見つけ、正面を向くように補正します。"),
             "MASK_SECOND_FLAG": ("2回目トライ", "1回目で失敗した場合にマスク条件を緩めて再試行します。"),
-            "SIO_FLAG": ("SiO信号待ち", "GPIOからのトリガー信号が入るまで、メインループを停止させます。"),
-            "LENGTH_FILTER_FLAG": ("周長フィルタ", "輪郭の長さ（ピクセル）によるノイズ除去を行います。"),
+            "SIO_FLAG": ("SiO信号待ち", "GPIOからのトリガー信号が入るまで待機します。"),
+            "LENGTH_FILTER_FLAG": ("周長フィルタ", "輪郭の長さによるノイズ除去を行います。"),
             "AREA_FILTER_FLAG": ("面積フィルタ", "輪郭の内部面積によるノイズ除去を行います。"),
-            "SAVE_DEBUG_FLAG": ("デバッグ画像保存", "輪郭や射影変換の過程を保存します。（※ストレージ容量に注意）"),
+            "SAVE_DEBUG_FLAG": ("デバッグ画像保存", "処理過程の画像を保存します（ストレージ容量に注意）。"),
         }
         self.flag_vars = {}
         for r, (fname, (title, tip)) in enumerate(flag_descriptions.items()):
@@ -1310,13 +1356,8 @@ class SettingsDialog(tk.Toplevel):
                   fg=COLOR_TEXT_MAIN, relief="flat",
                   command=self._select_res_dir).pack(side=tk.LEFT)
 
-        # 車種設定
-        model_f, model_inner = create_card(inner, "車種設定 (改行区切り)")
-        model_f.pack(fill=tk.X, pady=5)
-        self.model_text = tk.Text(model_inner, height=5, font=FONT_NORMAL,
-                                  bg=COLOR_BG_INPUT, fg="white", bd=1, relief="solid")
-        self.model_text.pack(fill=tk.X)
-        self.model_text.bind("<<Modified>>", lambda e: self._mark_changed())
+        # 車種設定部分は不要なため削除されました
+        pass
 
     def _select_res_dir(self):
         from tkinter import filedialog
@@ -1356,6 +1397,14 @@ class SettingsDialog(tk.Toplevel):
         self.v_ada_block.set(ip.get("ada_block", 11))
         self.v_ada_c.set(ip.get("ada_c", 2))
         self.v_white_ratio.set(ip.get("white_ratio", 3))
+        self.v_clahe.set(ip.get("clahe_clip", 0.0))
+        self.v_bright.set(ip.get("brightness", 1.0))
+        self.v_contrast.set(ip.get("contrast", 1.0))
+        self.v_saturation.set(ip.get("saturation", 1.0))
+        self.v_gamma.set(ip.get("gamma", 1.0))
+        self.v_blur.set(ip.get("blur", 0.0))
+        self.v_sharp.set(ip.get("sharpen", 0.0))
+        
         self.v_min_len.set(ip.get("filter_min_len", 200))
         self.v_max_len.set(ip.get("filter_max_len", 1500))
         self.v_min_area.set(ip.get("filter_min_area", 10000))
@@ -1377,9 +1426,8 @@ class SettingsDialog(tk.Toplevel):
         for fname, var in self.flag_vars.items():
             var.set(flags.get(fname, True))
 
-        models = self.cfg.data.get("car_models", ["default"])
-        self.model_text.delete("1.0", tk.END)
-        self.model_text.insert("1.0", "\n".join(models))
+        # 車種設定の読込は不要
+        pass
 
         self._changed = False
         self.btn_save.config(bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, text="保存して閉じる")
@@ -1425,6 +1473,13 @@ class SettingsDialog(tk.Toplevel):
 
         ip = self.cfg.data.setdefault("image_processing", {})
         ip.update({
+            "clahe_clip": self.v_clahe.get(),
+            "brightness": self.v_bright.get(),
+            "contrast": self.v_contrast.get(),
+            "saturation": self.v_saturation.get(),
+            "gamma": self.v_gamma.get(),
+            "blur": self.v_blur.get(),
+            "sharpen": self.v_sharp.get(),
             "threshold": self.v_threshold.get(),
             "threshold_mode": self.thr_mode_var.get(),
             "ada_block": self.v_ada_block.get(),
@@ -1453,8 +1508,8 @@ class SettingsDialog(tk.Toplevel):
         for fname, var in self.flag_vars.items():
             flags[fname] = var.get()
 
-        models = [m.strip() for m in self.model_text.get("1.0", tk.END).split("\n") if m.strip()]
-        self.cfg.data["car_models"] = models if models else ["default"]
+        # 車種設定の保存は不要なため削除
+        pass
 
     def _mark_changed(self):
         self._changed = True
@@ -1522,7 +1577,7 @@ class SettingsDialog(tk.Toplevel):
             "GPIOピンタブ": "全ての入出力ピンのBCM番号を設定します。\n仕様マッピングは仕様IDとGPIOピンの対応表です。\n「テスト」ボタンで配線チェックが可能です。",
             "画像処理タブ": "二値化、輪郭フィルタ、射影変換などのパラメータを調整します。\nプレビューで設定結果をリアルタイムに確認できます。",
             "画素数・保存タブ": "画像保存時の解像度やディスク容量管理の設定を行います。",
-            "システムタブ": "処理フラグのON/OFFや結果出力先、車種名を変更します。"
+            "システムタブ": "処理フラグのON/OFFや結果出力先を変更します。"
         })
 
     def _test_gpio_pulse(self, var):
@@ -1567,6 +1622,24 @@ class SettingsDialog(tk.Toplevel):
         except Exception as e:
             self.logger.error(f"GPIOテスト失敗: {e}")
             messagebox.showerror("テストエラー", f"GPIOの操作に失敗しました: {e}", parent=self)
+
+    def _slider_with_label(self, parent, lbl, var, frm, to, res=1, tip=""):
+        """スライダーとラベルを含むフレームを作成し、スライダーを返す"""
+        f = tk.Frame(parent, bg=COLOR_BG_PANEL)
+        f.pack(fill=tk.X, padx=10, pady=2)
+        l = tk.Label(f, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
+                 fg=COLOR_TEXT_SUB, width=16, anchor="w")
+        l.pack(side=tk.LEFT)
+        s = tk.Scale(f, variable=var, from_=frm, to=to,
+                     orient=tk.HORIZONTAL, resolution=res,
+                     bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                     troughcolor=COLOR_BG_INPUT, highlightthickness=0,
+                     activebackground=COLOR_ACCENT,
+                     command=lambda _: self._mark_changed())
+        s.pack(fill=tk.X, side=tk.LEFT, expand=True)
+        if tip:
+            Tooltip(s, tip)
+        return f, s
 
     # ---------------------------------------------------------------
     # ユーティリティ

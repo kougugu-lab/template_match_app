@@ -29,6 +29,59 @@
     "pin_out9": 21,
     "pin_out10": 26
   },
+  "image_processing": {
+    "threshold": 226,
+    "threshold_mode": "simple",
+    "ada_block": 63,
+    "ada_c": -12,
+    "white_ratio": 52,
+    "affine_h_mm": 163,
+    "affine_w_mm": 22,
+    "filter_min_len": 848,
+    "filter_max_len": 1575,
+    "filter_min_area": 5265,
+    "filter_max_area": 9778,
+    "roi": [
+      0.25136612021857924,
+      0.14845173041894352,
+      0.8592896174863388,
+      0.9808743169398907
+    ],
+    "decision_threshold": 0.86
+  },
+  "flags": {
+    "CLAHE_FLAG": true,
+    "CONTOURS_FLAG": true,
+    "MASK_SECOND_FLAG": true,
+    "SIO_FLAG": true,
+    "LENGTH_FILTER_FLAG": true,
+    "AREA_FILTER_FLAG": true,
+    "SAVE_DEBUG_FLAG": false
+  },
+  "storage": {
+    "results_dir": "./results",
+    "res_ng": "1920x1080",
+    "res_ok": "640x480",
+    "max_results_gb": 10,
+    "auto_delete_enabled": true
+  },
+  "augment": {
+    "master_dir": "./master_image",
+    "output_dir": "./master_image",
+    "num_variants": 50,
+    "canvas_h": 640,
+    "canvas_w": 500,
+    "angle_range": 5,
+    "scale_range": [
+      0.9,
+      1.1
+    ],
+    "brightness_range": [
+      -30,
+      30
+    ],
+    "noise_level": 10
+  },
   "specification_mapping": {
     "1": {
       "name": "S",
@@ -138,66 +191,5 @@
   "current_spec": {
     "car_model": "default",
     "specification": "1"
-  },
-  "image_processing": {
-    "threshold": 226,
-    "threshold_mode": "adaptive",
-    "ada_block": 63,
-    "ada_c": -12,
-    "white_ratio": 52,
-    "affine_h_mm": 163,
-    "affine_w_mm": 22,
-    "filter_min_len": 848,
-    "filter_max_len": 1575,
-    "filter_min_area": 5265,
-    "filter_max_area": 9778,
-    "roi": [
-      0,
-      4,
-      604,
-      480
-    ],
-    "decision_threshold": 0.86,
-    "mask_lh_up": 0,
-    "mask_lh_down": 0,
-    "mask_rh_up": 640,
-    "mask_rh_down": 640,
-    "mask_top": 0,
-    "mask_bottom": 480
-  },
-  "flags": {
-    "CLAHE_FLAG": true,
-    "THRESHOLD_FLAG": true,
-    "ADAPTIVE_FLAG": true,
-    "CONTOURS_FLAG": true,
-    "MASK_SECOND_FLAG": true,
-    "SIO_FLAG": true,
-    "LENGTH_FILTER_FLAG": true,
-    "AREA_FILTER_FLAG": true,
-    "SAVE_DEBUG_FLAG": false
-  },
-  "storage": {
-    "results_dir": "./results",
-    "res_ng": "1920x1080",
-    "res_ok": "640x480",
-    "max_results_gb": 10,
-    "auto_delete_enabled": true
-  },
-  "augment": {
-    "master_dir": "./master_image",
-    "output_dir": "./master_image_increase",
-    "num_variants": 50,
-    "canvas_h": 640,
-    "canvas_w": 500,
-    "angle_range": 5,
-    "scale_range": [
-      0.9,
-      1.1
-    ],
-    "brightness_range": [
-      -30,
-      30
-    ],
-    "noise_level": 10
   }
 }

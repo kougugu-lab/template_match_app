@@ -57,6 +57,8 @@ class EditorView(tk.Frame):
         self.crop_end = None
         self.is_cropping = False
         self.mouse_mode = tk.StringVar(value="point")
+        self.image_x = 0
+        self.image_y = 0
 
         # 調整パラメータ
         self.brightness_var = tk.DoubleVar(value=1.0)
@@ -96,10 +98,10 @@ class EditorView(tk.Frame):
         self.canvas.bind("<Leave>", lambda _: self.canvas.unbind_all("<MouseWheel>"))
 
     def _sync_aug_paths(self):
-        """設定から現在の車種に合わせたフォルダを取得し反映する"""
+        """設定からデフォルトフォルダを取得し反映する"""
         master_folder = self.cfg.get_master_folder()
         self.aug_src_var = tk.StringVar(value=self.cfg.get("augment", "master_dir", default=os.path.join(master_folder, "source")))
-        self.aug_out_var = tk.StringVar(value=self.cfg.get("augment", "output_dir", default=master_folder))
+        self.aug_out_var = tk.StringVar(value=self.cfg.get("augment", "output_dir", default=os.path.join(master_folder, "augmented")))
 
     def _build_ui(self):
         """UIの骨格を構築"""
@@ -160,148 +162,207 @@ class EditorView(tk.Frame):
         """設定パネルのウィジェットを構築"""
         sf = self.ctrl_frame
 
-        # --- セクション1: 読込・射影変換 ---
-        self._section(sf, "1. 読込・射影変換")
-        tk.Button(sf, text="画像を読み込み", font=FONT_NORMAL, bg=COLOR_ACCENT,
-                  fg="black", relief="flat",
-                  command=self.load_image).pack(fill=tk.X, pady=3, padx=5)
-        tk.Button(sf, text="カメラから撮影", font=FONT_NORMAL, bg=COLOR_OK,
-                  fg="black", relief="flat",
-                  command=self.capture_from_camera).pack(fill=tk.X, pady=3, padx=5)
+        # --- セクション1: 画像取得 ---
+        self._section(sf, "1. 画像取得・操作")
+        btn_load = tk.Button(sf, text="画像を読み込み", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
+                  fg=COLOR_TEXT_MAIN, relief="flat", command=self.load_image)
+        btn_load.pack(fill=tk.X, pady=3, padx=5)
+        Tooltip(btn_load, "PC内の画像ファイルを読み込みます。")
+        
+        btn_cam = tk.Button(sf, text="カメラから撮影", font=FONT_NORMAL, bg=COLOR_OK,
+                  fg="black", relief="flat", command=self.capture_from_camera)
+        btn_cam.pack(fill=tk.X, pady=3, padx=5)
+        Tooltip(btn_cam, "現在カメラに映っている画像をキャプチャします。")
 
         mode_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         mode_f.pack(fill=tk.X, padx=5, pady=2)
         tk.Label(mode_f, text="マウス操作:", font=FONT_NORMAL,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-        for txt, val in [("点を選択", "point"), ("範囲切抜", "trim")]:
-            tk.Radiobutton(mode_f, text=txt, variable=self.mouse_mode, value=val,
-                           font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
-                           selectcolor=COLOR_BG_INPUT, indicatoron=0,
-                           activebackground=COLOR_ACCENT, activeforeground="black",
-                           relief="flat", padx=5).pack(side=tk.LEFT, padx=2)
+                 
+        rb_pt = tk.Radiobutton(mode_f, text="点を選択", variable=self.mouse_mode, value="point",
+                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                       selectcolor=COLOR_BG_INPUT, indicatoron=0,
+                       activebackground=COLOR_ACCENT, activeforeground="black",
+                       relief="flat", padx=5)
+        rb_pt.pack(side=tk.LEFT, padx=2)
+        Tooltip(rb_pt, "画像上で4点をクリックし、射影変換（歪み補正）の基準点を指定します。")
+        
+        rb_tr = tk.Radiobutton(mode_f, text="範囲切抜", variable=self.mouse_mode, value="trim",
+                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                       selectcolor=COLOR_BG_INPUT, indicatoron=0,
+                       activebackground=COLOR_ACCENT, activeforeground="black",
+                       relief="flat", padx=5)
+        rb_tr.pack(side=tk.LEFT, padx=2)
+        Tooltip(rb_tr, "ドラッグして四角形で範囲を切り抜きます。")
+
+        btn_undo = tk.Button(sf, text="戻る", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
+                  fg=COLOR_TEXT_MAIN, relief="flat", command=self.undo)
+        btn_undo.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_undo, "直前の編集操作を取り消します。")
+        
+        btn_reset = tk.Button(sf, text="全てリセット", font=FONT_NORMAL, bg=COLOR_NG,
+                  fg="black", relief="flat", command=self.reset_all)
+        btn_reset.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_reset, "画像を読み込み直後の状態に戻します。")
+
+        # --- セクション2: 画像補正 ---
+        self._section(sf, "2. 画像補正")
+        self._slider(sf, "輝度正規化", 0.0, 5.0, self.clahe_clip, res=0.1, tip="局所的なコントラストを強調し、影や白飛びを見やすくします。")
+        self._slider(sf, "輝度", 0.1, 3.0, self.brightness_var, res=0.05, tip="画像全体の明るさを調整します。")
+        self._slider(sf, "コントラスト", 0.1, 3.0, self.contrast_var, res=0.05, tip="明暗の差を強調します。")
+        self._slider(sf, "彩度", 0.1, 3.0, self.saturation_var, res=0.05, tip="色の鮮やかさを調整します。")
+        self._slider(sf, "ガンマ", 0.1, 5.0, self.gamma_var, res=0.05, tip="中間色の明るさを調整します。")
+        self._slider(sf, "ぼかし", 0.0, 5.0, self.blur_var, res=0.1, tip="ノイズを減らすために画像をぼかします。")
+        self._slider(sf, "シャープ", 0.0, 5.0, self.sharpen_var, res=0.1, tip="輪郭を強調してくっきりさせます。")
+
+        # --- セクション3: オート抽出・変形 ---
+        self._section(sf, "3. 抽出・変形")
+        cb_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
+        cb_f.pack(fill=tk.X, padx=5)
+        chk_bin = tk.Checkbutton(cb_f, text="二値化テスト", variable=self.enable_binary,
+                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                       selectcolor=COLOR_BG_INPUT, command=self.update_image)
+        chk_bin.pack(side=tk.LEFT)
+        Tooltip(chk_bin, "本番の検査時と同じ二値化処理をプレビューします。点選択には影響しません。")
+        
+        rb_sm = tk.Radiobutton(cb_f, text="Simple", variable=self.threshold_mode, value="simple",
+                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                       selectcolor=COLOR_BG_INPUT, command=self.update_image)
+        rb_sm.pack(side=tk.LEFT)
+        Tooltip(rb_sm, "固定の閾値で白黒に分けます。")
+        
+        rb_ad = tk.Radiobutton(cb_f, text="Adaptive", variable=self.threshold_mode, value="adaptive",
+                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                       selectcolor=COLOR_BG_INPUT, command=self.update_image)
+        rb_ad.pack(side=tk.LEFT)
+        Tooltip(rb_ad, "周囲の明るさに応じて自動的に白黒に分けます。")
+
+        self._slider(sf, "Simple閾値", 0, 255, self.binary_threshold, tip="Simpleモード時のしきい値。これより暗いと黒になります。")
+        self._slider(sf, "Ada Block", 3, 99, self.ada_block, tip="Adaptiveモード時、明るさを計算する範囲（奇数指定）。")
+        self._slider(sf, "Ada C", -30, 30, self.ada_c, tip="Adaptiveモードの微調整用オフセット。")
+        self._slider(sf, "最小周長", 0, 5000, self.min_len, tip="この長さ未満の輪郭を無視します。")
+        self._slider(sf, "最大周長", 0, 5000, self.max_len, tip="この長さより大きい輪郭を無視します。")
+        self._slider(sf, "最小面積", 0, 100000, self.min_area, tip="この面積未満の輪郭を無視します。")
+        self._slider(sf, "最大面積", 0, 100000, self.max_area, tip="この面積より大きい輪郭を無視します。")
+
+        btn_adopt = tk.Button(sf, text="現在の輪郭を4点に採用", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
+                  fg=COLOR_TEXT_MAIN, relief="flat", command=self.adopt_contour)
+        btn_adopt.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_adopt, "上記設定で見つかった最大の輪郭を抽出し、変形基準の4点として設定します。")
 
         mm_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         mm_f.pack(fill=tk.X, padx=5, pady=3)
-        for lbl, var in [("H(mm):", self.mm_height), ("W(mm):", self.mm_width)]:
-            tk.Label(mm_f, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
-                     fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-            tk.Spinbox(mm_f, textvariable=var, from_=1, to=999,
-                       width=5, font=FONT_NORMAL, bg=COLOR_BG_INPUT,
-                       fg="white", bd=1, relief="solid").pack(side=tk.LEFT, padx=3)
+        lbl_h = tk.Label(mm_f, text="H(mm):", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        lbl_h.pack(side=tk.LEFT)
+        sp_h = tk.Spinbox(mm_f, textvariable=self.mm_height, from_=1, to=999, width=5, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_h.pack(side=tk.LEFT, padx=3)
+        Tooltip(sp_h, "変形後の画像の縦の物理サイズ。幅との比率を正すために使用。")
+        
+        lbl_w = tk.Label(mm_f, text="W(mm):", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        lbl_w.pack(side=tk.LEFT)
+        sp_w = tk.Spinbox(mm_f, textvariable=self.mm_width, from_=1, to=999, width=5, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_w.pack(side=tk.LEFT, padx=3)
+        Tooltip(sp_w, "変形後の画像の横の物理サイズ。")
 
-        for lbl, cmd in [("現在の輪郭を採用", self.adopt_contour),
-                         ("射影変換を実行", self.apply_perspective),
-                         ("座標リセット", self.reset_perspective)]:
-            tk.Button(sf, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_INPUT,
-                      fg=COLOR_TEXT_MAIN, relief="flat",
-                      command=cmd).pack(fill=tk.X, pady=2, padx=5)
-
-        # --- セクション2: 抽出設定 ---
-        self._section(sf, "2. 輪郭抽出設定")
-        cb_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
-        cb_f.pack(fill=tk.X, padx=5)
-        tk.Checkbutton(cb_f, text="二値化プレビュー", variable=self.enable_binary,
-                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
-                       selectcolor=COLOR_BG_INPUT, command=self.update_image).pack(side=tk.LEFT)
-        for txt, val in [("Simple", "simple"), ("Adaptive", "adaptive")]:
-            tk.Radiobutton(cb_f, text=txt, variable=self.threshold_mode, value=val,
-                           font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
-                           selectcolor=COLOR_BG_INPUT, command=self.update_image).pack(side=tk.LEFT)
-
-        self._slider(sf, "Simple閾値", 0, 255, self.binary_threshold)
-        self._slider(sf, "Ada Block", 3, 99, self.ada_block)
-        self._slider(sf, "Ada C", -30, 30, self.ada_c)
-        self._slider(sf, "最小周長", 0, 5000, self.min_len)
-        self._slider(sf, "最大周長", 0, 5000, self.max_len)
-        self._slider(sf, "最小面積", 0, 100000, self.min_area)
-        self._slider(sf, "最大面積", 0, 100000, self.max_area)
-
-        # --- セクション3: 加工調整 ---
-        self._section(sf, "3. 加工調整")
-        self._slider(sf, "CLAHE", 0.0, 5.0, self.clahe_clip, res=0.1)
-        self._slider(sf, "輝度", 0.1, 3.0, self.brightness_var, res=0.05)
-        self._slider(sf, "コントラスト", 0.1, 3.0, self.contrast_var, res=0.05)
-        self._slider(sf, "彩度", 0.1, 3.0, self.saturation_var, res=0.05)
-        self._slider(sf, "ガンマ", 0.1, 5.0, self.gamma_var, res=0.05)
-        self._slider(sf, "ぼかし", 0.0, 5.0, self.blur_var, res=0.1)
-        self._slider(sf, "シャープ", 0.0, 5.0, self.sharpen_var, res=0.1)
+        btn_apply = tk.Button(sf, text="射影変換を実行", font=FONT_NORMAL, bg=COLOR_OK,
+                  fg="black", relief="flat", command=self.apply_perspective)
+        btn_apply.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_apply, "指定した4点を元に、画像を指定した縦横比で真っ直ぐに変形します。")
+        
+        btn_reset_p = tk.Button(sf, text="座標リセット", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
+                  fg=COLOR_TEXT_MAIN, relief="flat", command=self.reset_perspective)
+        btn_reset_p.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_reset_p, "選択した4点をクリアします。")
 
         # --- セクション4: 保存 ---
-        self._section(sf, "4. 保存設定")
-        tk.Checkbutton(sf, text="縦横比固定", variable=self.keep_aspect,
+        self._section(sf, "4. 保存・マスター登録")
+        chk_asp = tk.Checkbutton(sf, text="縦横比固定", variable=self.keep_aspect,
                        font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
-                       selectcolor=COLOR_BG_INPUT).pack(anchor=tk.W, padx=5)
+                       selectcolor=COLOR_BG_INPUT)
+        chk_asp.pack(anchor=tk.W, padx=5)
+        Tooltip(chk_asp, "チェックを入れると、保存幅を変更した際に高さも自動計算されます。")
+
         px_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         px_f.pack(fill=tk.X, padx=5, pady=3)
-        for lbl, var in [("幅(px):", self.save_width_px), ("高(px):", self.save_height_px)]:
-            tk.Label(px_f, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
-                     fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-            tk.Spinbox(px_f, textvariable=var, from_=1, to=9999,
-                       width=6, font=FONT_NORMAL, bg=COLOR_BG_INPUT,
-                       fg="white", bd=1, relief="solid").pack(side=tk.LEFT, padx=2)
+        lbl_pw = tk.Label(px_f, text="幅(px):", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        lbl_pw.pack(side=tk.LEFT)
+        sp_pw = tk.Spinbox(px_f, textvariable=self.save_width_px, from_=1, to=9999, width=6, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_pw.pack(side=tk.LEFT, padx=2)
+        Tooltip(sp_pw, "保存時の画像の幅。")
+        
+        lbl_ph = tk.Label(px_f, text="高(px):", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        lbl_ph.pack(side=tk.LEFT)
+        sp_ph = tk.Spinbox(px_f, textvariable=self.save_height_px, from_=1, to=9999, width=6, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_ph.pack(side=tk.LEFT, padx=2)
+        Tooltip(sp_ph, "保存時の画像の高さ。")
+        
         self.save_width_px.trace_add("write", self.sync_height)
 
-        for lbl, cmd, bg in [
-            ("現在のサイズを取得", self.get_current_size, COLOR_BG_INPUT),
-            ("汎用画像として保存", self.save_image, COLOR_BG_INPUT),
-            ("新マスターとして登録...", self.register_master_image, COLOR_OK),
-            ("既存マスターの削除...", self.delete_master_image, COLOR_NG),
-            ("戻る(Undo)", self.undo, COLOR_BG_INPUT),
-            ("全てリセット", self.reset_all, COLOR_NG),
-        ]:
-            tk.Button(sf, text=lbl, font=FONT_NORMAL, bg=bg,
-                      fg="white" if bg != COLOR_OK else "black",
-                      relief="flat", command=cmd).pack(fill=tk.X, pady=2, padx=5)
+        btn_sz = tk.Button(sf, text="現在のサイズを取得", font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat", command=self.get_current_size)
+        btn_sz.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_sz, "現在表示中の画像のサイズを幅・高さにセットします。")
+        
+        btn_sv = tk.Button(sf, text="汎用画像として保存", font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat", command=self.save_image)
+        btn_sv.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_sv, "プレビューの画像をPC内の任意の場所に保存します。")
+        
+        btn_reg = tk.Button(sf, text="新マスターとして登録...", font=FONT_NORMAL, bg=COLOR_OK, fg="black", relief="flat", command=self.register_master_image)
+        btn_reg.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_reg, "現在のプレビュー画像を検査用マスター画像として登録します。")
+        
+        btn_del = tk.Button(sf, text="既存マスターの削除...", font=FONT_NORMAL, bg=COLOR_NG, fg="black", relief="flat", command=self.delete_master_image)
+        btn_del.pack(fill=tk.X, pady=2, padx=5)
+        Tooltip(btn_del, "現在登録されているマスター画像の中から不要なものを削除します。")
 
         # --- セクション5: データ拡張 ---
-        self._section(sf, "5. データ拡張 (Augmentation)")
+        self._section(sf, "5. データ拡張")
         aug_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         aug_f.pack(fill=tk.X, padx=5, pady=3)
-        for lbl, var, frm, to in [
-            ("生成枚数:", self.aug_num, 1, 500),
-            ("回転角(deg):", self.aug_angle, 0, 45),
-            ("ノイズ:", self.aug_noise, 0, 100),
-        ]:
-            row = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
-            row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
-                     fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
-            tk.Spinbox(row, textvariable=var, from_=frm, to=to,
-                       width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT,
-                       fg="white", bd=1, relief="solid").pack(side=tk.LEFT)
+        
+        row1 = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
+        row1.pack(fill=tk.X, pady=2)
+        tk.Label(row1, text="生成枚数:", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
+        sp_an = tk.Spinbox(row1, textvariable=self.aug_num, from_=1, to=500, width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_an.pack(side=tk.LEFT)
+        Tooltip(sp_an, "1枚の元画像から何枚のバリエーションを生成するかを指定します。")
+        
+        row2 = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
+        row2.pack(fill=tk.X, pady=2)
+        tk.Label(row2, text="回転角(deg):", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
+        sp_aa = tk.Spinbox(row2, textvariable=self.aug_angle, from_=0, to=45, width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_aa.pack(side=tk.LEFT)
+        Tooltip(sp_aa, "最大で何ピクセルまでランダムに回転させるかの目安を指定します。")
+        
+        row3 = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
+        row3.pack(fill=tk.X, pady=2)
+        tk.Label(row3, text="ノイズ:", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
+        sp_ano = tk.Spinbox(row3, textvariable=self.aug_noise, from_=0, to=100, width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_ano.pack(side=tk.LEFT)
+        Tooltip(sp_ano, "画像に付加するランダムノイズの強度。")
 
         src_row = tk.Frame(sf, bg=COLOR_BG_PANEL)
         src_row.pack(fill=tk.X, padx=5, pady=2)
-        tk.Label(src_row, text="元画像フォルダ:", font=FONT_NORMAL,
-                 bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-        tk.Entry(src_row, textvariable=self.aug_src_var, font=FONT_NORMAL,
-                 bg=COLOR_BG_INPUT, fg="white", bd=1, relief="solid").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
-        tk.Button(src_row, text="...", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
-                  fg=COLOR_TEXT_MAIN, relief="flat",
-                  command=lambda: self.aug_src_var.set(
-                      filedialog.askdirectory() or self.aug_src_var.get())).pack(side=tk.LEFT)
+        tk.Label(src_row, text="元画像:", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        tk.Entry(src_row, textvariable=self.aug_src_var, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        btn_src = tk.Button(src_row, text="...", font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat", command=lambda: self.aug_src_var.set(filedialog.askdirectory() or self.aug_src_var.get()))
+        btn_src.pack(side=tk.LEFT)
+        Tooltip(btn_src, "データ拡張のベースとなる画像が入ったフォルダを選択します。")
 
         out_row = tk.Frame(sf, bg=COLOR_BG_PANEL)
         out_row.pack(fill=tk.X, padx=5, pady=2)
-        tk.Label(out_row, text="出力フォルダ:", font=FONT_NORMAL,
-                 bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-        self.aug_out_var = tk.StringVar(value=self.cfg.get("augment", "output_dir", default="./master_image"))
-        tk.Entry(out_row, textvariable=self.aug_out_var, font=FONT_NORMAL,
-                 bg=COLOR_BG_INPUT, fg="white", bd=1, relief="solid").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
-        tk.Button(out_row, text="...", font=FONT_NORMAL, bg=COLOR_BG_INPUT,
-                  fg=COLOR_TEXT_MAIN, relief="flat",
-                  command=lambda: self.aug_out_var.set(
-                      filedialog.askdirectory() or self.aug_out_var.get())).pack(side=tk.LEFT)
+        tk.Label(out_row, text="出力先:", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        tk.Entry(out_row, textvariable=self.aug_out_var, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        btn_out = tk.Button(out_row, text="...", font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat", command=lambda: self.aug_out_var.set(filedialog.askdirectory() or self.aug_out_var.get()))
+        btn_out.pack(side=tk.LEFT)
+        Tooltip(btn_out, "生成した画像を保存するフォルダを選択します。")
 
         self.aug_progress = ttk.Progressbar(sf, orient=tk.HORIZONTAL, mode='determinate')
         self.aug_progress.pack(fill=tk.X, padx=5, pady=3)
-        self.aug_status_lbl = tk.Label(sf, text="待機中", font=FONT_NORMAL,
-                                       bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        self.aug_status_lbl = tk.Label(sf, text="待機中", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
         self.aug_status_lbl.pack()
-        self.btn_aug = tk.Button(sf, text="データ拡張を実行", font=FONT_BOLD,
-                  bg=COLOR_WARNING, fg="black", relief="flat",
-                  command=self.run_augmentation)
+        self.btn_aug = tk.Button(sf, text="データ拡張を実行", font=FONT_BOLD, bg=COLOR_OK, fg="black", relief="flat", command=self.run_augmentation)
         self.btn_aug.pack(fill=tk.X, pady=(10, 5), padx=5, ipady=3)
+        Tooltip(self.btn_aug, "元画像フォルダ内の全画像に対してデータ拡張を実行し、出力フォルダに保存します。")
 
     def _section(self, parent, title):
         tk.Label(parent, text=f"  {title}", font=FONT_BOLD,
@@ -309,16 +370,19 @@ class EditorView(tk.Frame):
             fill=tk.X, pady=(12, 2))
         tk.Frame(parent, bg=COLOR_BORDER, height=1).pack(fill=tk.X, padx=5, pady=2)
 
-    def _slider(self, parent, label, from_, to, var, res=1):
+    def _slider(self, parent, label, from_, to, var, res=1, tip=None):
         f = tk.Frame(parent, bg=COLOR_BG_PANEL)
         f.pack(fill=tk.X, padx=5, pady=1)
         tk.Label(f, text=label, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
                  fg=COLOR_TEXT_SUB, width=10, anchor="w").pack(side=tk.LEFT)
-        tk.Scale(f, from_=from_, to=to, variable=var, orient=tk.HORIZONTAL,
+        sc = tk.Scale(f, from_=from_, to=to, variable=var, orient=tk.HORIZONTAL,
                  resolution=res, command=self.update_image,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
                  troughcolor=COLOR_BG_INPUT, highlightthickness=0,
-                 activebackground=COLOR_ACCENT).pack(fill=tk.X, side=tk.LEFT, expand=True)
+                 activebackground=COLOR_ACCENT)
+        sc.pack(fill=tk.X, side=tk.LEFT, expand=True)
+        if tip:
+            Tooltip(sc, tip)
 
     # ---------------------------------------------------------------
     # 画像操作
@@ -440,48 +504,39 @@ class EditorView(tk.Frame):
     def update_image(self, *args):
         if self.original_image is None:
             return
+        
+        # 射影変換済みかどうかに基づきベース画像を選択
         base = (self.transformed_image.copy() if self.is_transformed
                 else self.original_image.copy())
+        
+        # 設定値を収集
+        ip = {
+            "clahe_clip": self.clahe_clip.get(),
+            "brightness": self.brightness_var.get(),
+            "contrast": self.contrast_var.get(),
+            "saturation": self.saturation_var.get(),
+            "gamma": self.gamma_var.get(),
+            "blur": self.blur_var.get(),
+            "sharpen": self.sharpen_var.get(),
+            "threshold": self.binary_threshold.get(),
+            "threshold_mode": self.threshold_mode.get(),
+            "ada_block": self.ada_block.get(),
+            "ada_c": self.ada_c.get(),
+        }
+
+        # 共通エンジンの前処理を適用 (OpenCV)
+        from .engine import InspectionEngine
+        dummy_engine = InspectionEngine(self.cfg)
         cv_img = cv2.cvtColor(np.array(base), cv2.COLOR_RGB2BGR)
+        gray = dummy_engine.apply_preprocessing(cv_img, ip)
 
-        if self.clahe_clip.get() > 0:
-            lab = cv2.cvtColor(cv_img, cv2.COLOR_BGR2LAB)
-            clahe = cv2.createCLAHE(clipLimit=self.clahe_clip.get(), tileGridSize=(8, 8))
-            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-            cv_img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        if self.blur_var.get() > 0:
-            k = int(self.blur_var.get() * 2) * 2 + 1
-            cv_img = cv2.GaussianBlur(cv_img, (k, k), 0)
-        if self.sharpen_var.get() > 0:
-            alpha = self.sharpen_var.get()
-            kernel = np.array([[-1, -1, -1], [-1, 9 + alpha, -1], [-1, -1, -1]])
-            cv_img = cv2.filter2D(cv_img, -1, kernel)
-
-        img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
-        if self.brightness_var.get() != 1.0:
-            img = ImageEnhance.Brightness(img).enhance(self.brightness_var.get())
-        if self.contrast_var.get() != 1.0:
-            img = ImageEnhance.Contrast(img).enhance(self.contrast_var.get())
-        if self.saturation_var.get() != 1.0:
-            img = ImageEnhance.Color(img).enhance(self.saturation_var.get())
-        if self.gamma_var.get() != 1.0:
-            lut = [int(pow(i / 255.0, 1.0 / self.gamma_var.get()) * 255) for i in range(256)]
-            img = img.point(lut * 3)
-
+        # 二値化テストが有効な場合
         if self.enable_binary.get():
-            gray_img = img.convert("L")
-            if self.threshold_mode.get() == "simple":
-                img = gray_img.point(
-                    lambda x: 255 if x > self.binary_threshold.get() else 0, mode="1"
-                ).convert("RGB")
-            else:
-                cv_gray = np.array(gray_img)
-                bk = self.ada_block.get()
-                bk = bk + 1 if bk % 2 == 0 else bk
-                cv_bin = cv2.adaptiveThreshold(cv_gray, 255,
-                                               cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                               cv2.THRESH_BINARY, bk, self.ada_c.get())
-                img = Image.fromarray(cv_bin).convert("RGB")
+            bin_img = dummy_engine.binarize(gray, ip)
+            img = Image.fromarray(cv2.cvtColor(bin_img, cv2.COLOR_GRAY2RGB))
+        else:
+            # 二値化しない場合は補正後のグレートーンをカラーに戻して表示（プレビュー用）
+            img = Image.fromarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB))
 
         self.current_image = img
         self.display_on_canvas()

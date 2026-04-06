@@ -22,13 +22,6 @@ DEFAULT_CONFIG = {
     "gpio_pins": {
         "pin_Start": 16, "pin_OKlog": 23, "pin_NGlog": 24
     },
-    "specification_mapping": {
-        "1":  {"name": "S",   "pins": [4]},
-        "2":  {"name": "キ",  "pins": [4, 5]},
-        "99": {"name": "エラー", "pins": []}
-    },
-    "car_models": ["default"],
-    "current_spec": {"car_model": "default", "specification": "1"},
     "image_processing": {
         "threshold": 30, "threshold_mode": "simple",
         "ada_block": 11, "ada_c": 2, "white_ratio": 3,
@@ -50,7 +43,7 @@ DEFAULT_CONFIG = {
     },
     "augment": {
         "master_dir": "./master_image/source",
-        "output_dir": "./master_image",
+        "output_dir": "./master_image/augmented",
         "num_variants": 50,
         "canvas_h": 640, "canvas_w": 500,
         "angle_range": 5, "scale_range": [0.9, 1.1],
@@ -136,24 +129,12 @@ class ConfigManager:
             d = d.setdefault(k, {})
         d[keys[-1]] = value
 
-    def get_master_folder(self, car_model=None):
-        """車種に対応するマスターフォルダパスを返す"""
-        if car_model is None:
-            car_model = self.get("current_spec", "car_model", default="default")
-        
-        # 1. 統合フォルダ master_image/{car_model}/
-        folder = f"./master_image/{car_model}/"
-        if os.path.exists(folder):
-            return folder
-            
-        # 2. 旧形式 master_{car_model}/
-        old_folder = f"./master_{car_model}/"
-        if os.path.exists(old_folder):
-            return old_folder
-            
-        # 3. master_image 直下
-        if os.path.exists("./master_image/"):
-            return "./master_image/"
-            
-        # 4. デフォルト
-        return "./master_image/default/"
+    def get_master_folder(self):
+        """マスターフォルダパスを返す"""
+        master_path = "./master_image/"
+        if not os.path.exists(master_path):
+            try:
+                os.makedirs(master_path, exist_ok=True)
+            except OSError:
+                pass
+        return master_path

@@ -253,20 +253,14 @@ class TMApp:
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(pady=(5, 2))
         spec_frm = tk.Frame(pnl, bg=COLOR_BG_INPUT)
         spec_frm.pack(fill=tk.X, padx=10, pady=3)
-        self.v_car_model = tk.StringVar(
-            value=self.cfg.get("current_spec", "car_model", default="default"))
         self.v_spec_id = tk.StringVar(
             value=self.cfg.get("current_spec", "specification", default="1"))
-        tk.Label(spec_frm, text="車種:", font=FONT_NORMAL,
-                 bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT, padx=8)
-        self.lbl_car_model = tk.Label(spec_frm, textvariable=self.v_car_model,
-                                      font=FONT_BOLD, bg=COLOR_BG_INPUT, fg=COLOR_ACCENT)
-        self.lbl_car_model.pack(side=tk.LEFT)
-        tk.Label(spec_frm, text="  仕様:", font=FONT_NORMAL,
-                 bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        # 車種表示を削除し、仕様のみを表示するように変更
+        tk.Label(spec_frm, text="仕様:", font=FONT_NORMAL,
+                 bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT, padx=15)
         self.lbl_spec = tk.Label(spec_frm, textvariable=self.v_spec_id,
                                  font=FONT_BOLD, bg=COLOR_BG_INPUT, fg=COLOR_ACCENT)
-        self.lbl_spec.pack(side=tk.LEFT, padx=3)
+        self.lbl_spec.pack(side=tk.LEFT, padx=5)
 
         # 最終判定
         tk.Label(pnl, text="最終判定", font=FONT_BOLD,
