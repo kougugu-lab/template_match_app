@@ -269,6 +269,11 @@ class TMApp:
         self.lbl_last_result = tk.Label(pnl, textvariable=self.v_last_result,
                                         font=FONT_LARGE, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB)
         self.lbl_last_result.pack(fill=tk.X, padx=10, pady=3)
+        
+        self.v_match_info = tk.StringVar(value="")
+        self.lbl_match_info = tk.Label(pnl, textvariable=self.v_match_info,
+                                       font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        self.lbl_match_info.pack(fill=tk.X, padx=10, pady=(0, 5))
 
         # NG履歴
         tk.Label(pnl, text="NG履歴", font=FONT_BOLD,
@@ -317,6 +322,7 @@ class TMApp:
             self.btn_edit.config(bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB)
             self._update_status("検査モード 待機中", COLOR_BG_PANEL)
         else:
+            self.editor_view.sync_settings()
             self.inspection_frame.pack_forget()
             self.editor_view.pack(fill=tk.BOTH, expand=True)
             self.btn_insp.config(bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB)
@@ -443,7 +449,8 @@ class TMApp:
                     self.root.after(0, lambda l=label: [
                         self._update_status(f"OK  {l}", COLOR_OK),
                         self.v_last_result.set(f"✓ {l}"),
-                        self.lbl_last_result.config(fg=COLOR_OK)
+                        self.lbl_last_result.config(fg=COLOR_OK),
+                        self.v_match_info.set(f"一致: {self.engine.last_matched_file} (スコア: {self.engine.last_score:.2f})") if self.engine.last_matched_file else self.v_match_info.set("")
                     ])
                     self.engine.save_log("OK", result)
                     self.engine.save_image(frame, "OK", config_manager=self.cfg)
@@ -460,11 +467,13 @@ class TMApp:
 
     def _handle_ng(self, label, frame, time_str):
         """NGの際の処理（UI更新・信号出力・履歴追加）"""
-        self.root.after(0, lambda l=label: [
+        info_text = f"最高スコア: {self.engine.last_score:.2f}"
+        self.root.after(0, lambda l=label, info=info_text: [
             self._update_status(f"NG  {l}", COLOR_NG),
             self.v_last_result.set(f"✗ {l}"),
             self.lbl_last_result.config(fg=COLOR_NG),
-            self.lb_history.insert(0, f"{time_str}  {l}")
+            self.v_match_info.set(info),
+            self.lb_history.insert(0, f"{time_str}  {l} ({info})")
         ])
         self.ng_history.append({"label": label, "time": time_str})
         self.engine.save_log("NG", label)
@@ -496,6 +505,7 @@ class TMApp:
         """設定保存後の再初期化"""
         self.preview_paused = False
         self._update_status("検査モード 待機中", COLOR_BG_PANEL)
+        self.editor_view.sync_settings()
         self._setup_hardware()
 
     def _show_help(self):

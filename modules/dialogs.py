@@ -823,7 +823,7 @@ class SettingsDialog(tk.Toplevel):
         self.thr_mode_var = tk.StringVar(value=ip.get("threshold_mode", "simple"))
         mode_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
         mode_f.pack(fill=tk.X, padx=10, pady=2)
-        for txt, val in [("Simple固定", "simple"), ("適応局所", "adaptive"), ("動的ヒストグラム", "dynamic")]:
+        for txt, val in [("固定しきい値", "simple"), ("自動適応", "adaptive"), ("動的割合", "dynamic")]:
             tk.Radiobutton(mode_f, text=txt, variable=self.thr_mode_var, value=val,
                            font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
                            selectcolor=COLOR_BG_INPUT,
@@ -835,10 +835,10 @@ class SettingsDialog(tk.Toplevel):
         self.v_white_ratio = tk.IntVar(value=ip.get("white_ratio", 3))
 
         # スライダーとラベルをセットで保持
-        f_thr, s_thr = self._slider_with_label(sf, "固定しきい値", self.v_threshold, 0, 255, tip="Simpleモード時：対象を浮き上がらせる境界の明るさ。")
-        f_ada_b, s_ada_b = self._slider_with_label(sf, "適応ブロック", self.v_ada_block, 3, 99, 2, tip="Adaptiveモード時：明るさを計算する範囲（奇数指定）。")
-        f_ada_c, s_ada_c = self._slider_with_label(sf, "適応定数C", self.v_ada_c, -30, 30, tip="Adaptiveモード時：しきい値からの微調整オフセット。")
-        f_white, s_white = self._slider_with_label(sf, "目標白面積率(%)", self.v_white_ratio, 1, 100, tip="動的ヒストグラムモード時：白くしたい部分の割合。")
+        f_thr, s_thr = self._slider_with_label(sf, "固定しきい値", self.v_threshold, 0, 255, tip="固定モード時：対象を浮き上がらせる境界の明るさ。")
+        f_ada_b, s_ada_b = self._slider_with_label(sf, "自動適応: 範囲", self.v_ada_block, 3, 99, 2, tip="自動適応モード時：明るさを計算する範囲（奇数指定）。")
+        f_ada_c, s_ada_c = self._slider_with_label(sf, "自動適応: 調整", self.v_ada_c, -30, 30, tip="自動適応モード時：しきい値からの微調整オフセット。")
+        f_white, s_white = self._slider_with_label(sf, "目標白面積率(%)", self.v_white_ratio, 1, 100, tip="動的割合モード時：白くしたい部分の割合。")
 
         self.bin_widgets = {
             "threshold": [s_thr],

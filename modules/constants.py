@@ -26,7 +26,7 @@ RES_OPTIONS_SAVE = RES_OPTIONS + ["保存しない"]
 
 # --- バージョン情報 ---
 APP_VERSION = "1.3.0"
-APP_BUILD_DATE = "2026-04-05"
+APP_BUILD_DATE = "2026-04-06"
 APP_NAME = "テンプレートマッチング検査システム"
 
 # --- フォント定義 ---

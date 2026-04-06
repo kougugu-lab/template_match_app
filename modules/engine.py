@@ -45,6 +45,8 @@ class InspectionEngine:
     def __init__(self, config_manager):
         self.cfg = config_manager
         self.logger = logging.getLogger(__name__)
+        self.last_matched_file = None
+        self.last_score = 0.0
         self._init_dirs()
 
     def _init_dirs(self):
@@ -352,10 +354,15 @@ class InspectionEngine:
                 best_pt = ml
 
         if max_val >= decision_thr and best_idx != -1:
+            matched_file = os.path.basename(template_paths[best_idx])
             folder_name = os.path.basename(os.path.dirname(template_paths[best_idx]))
             matched_names.append(folder_name)
-            self.logger.info(f"マッチング成功: フォルダ[{folder_name}] スコア[{max_val:.3f}]")
+            self.last_matched_file = matched_file
+            self.last_score = max_val
+            self.logger.info(f"マッチング成功: ファイル[{matched_file}] フォルダ[{folder_name}] スコア[{max_val:.3f}]")
         else:
+            self.last_matched_file = None
+            self.last_score = max_val
             self.logger.info(f"マッチング不一致: 最高スコア[{max_val:.3f}]")
 
         return matched_names, best_resized, best_result, max_val
@@ -460,25 +467,30 @@ class InspectionEngine:
             w, h = 1920, 1080
 
         if platform.system() == "Windows":
-            # DSHOWで致命的エラー（C++例外）を吐く環境があるための対策
-            # 1. DSHOW (MSMFよりも詳細設定が効きやすい)
-            # 2. MSMF (Windows標準、より安定)
-            # 3. CAP_ANY (インデックスのみ指定)
+            # 1. MSMF (Windows 10/11で最も安定)
             try:
-                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(idx, cv2.CAP_MSMF)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(idx)
+                cap = cv2.VideoCapture(idx, cv2.CAP_MSMF)
             except Exception:
+                cap = cv2.VideoCapture()
+
+            # 2. DSHOW (MSMFがダメな場合や、詳細設定が必要な古いカメラ用)
+            if not cap.isOpened():
+                if cap: cap.release()
                 try:
-                    cap = cv2.VideoCapture(idx, cv2.CAP_MSMF)
-                    if not cap.isOpened(): cap = cv2.VideoCapture(idx)
+                    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
                 except Exception:
-                    cap = cv2.VideoCapture(idx)
+                    cap = cv2.VideoCapture()
+
+            # 3. 最後にバックエンド指定なしで試行
+            if not cap.isOpened():
+                if cap: cap.release()
+                cap = cv2.VideoCapture(idx)
         else:
+            # Linux (V4L2)
             cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-            if not cap.isOpened(): cap = cv2.VideoCapture(idx)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(idx)
 
         if cap.isOpened():
             backend_name = cap.getBackendName() if hasattr(cap, "getBackendName") else "Unknown"
