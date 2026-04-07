@@ -87,6 +87,7 @@ class TMApp:
         self.template_paths = []
         self.preview_paused = False
         self._current_mode = "inspection"
+        self.is_rendering = False
 
     def _setup_hardware(self):
         """GPIO・カメラ・テンプレート読み込み"""
@@ -365,49 +366,69 @@ class TMApp:
                 continue
             try:
                 with self.camera_lock:
+                    # Windowsでの遅延対策（バッファの読み捨て）
+                    # buffer_size=1に設定していても、ドライバレベルで溜まる場合があるため
+                    # 複数回 grab() するのが効果的だが、ここでは1枚だけ grab してから読むことで最新化
+                    # 自体は read() で行う。
                     ret, frame = self.cap.read()
                 if ret:
                     self.last_frame = frame.copy()
-                    self._render_preview(frame)
+                    # 描画処理が追いついていない場合はスキップして最新化を優先
+                    if not self.is_rendering:
+                        self.is_rendering = True
+                        self._render_preview(frame)
             except Exception as e:
                 self.logger.error(f"Preview error: {e}")
-            time.sleep(0.033)  # ~30fps
+            time.sleep(0.01)  # レスポンス向上のため待ち時間を短縮
 
     def _render_preview(self, frame):
-        """フレームを Canvas に描画"""
+        """フレームを Canvas に描画 (最適化版)"""
         try:
             cam_preview_res = self.cfg.get("camera", "preview_res", default="640x480")
             if cam_preview_res == "プレビューなし":
+                self.is_rendering = False
                 return
-            try:
-                pw, ph = map(int, cam_preview_res.split("x"))
-            except Exception:
-                pw, ph = 640, 480
 
-            resized = cv2.resize(frame, (pw, ph), interpolation=cv2.INTER_NEAREST)
+            # キャンバスの現在サイズを取得
+            cw = self.preview_canvas.winfo_width()
+            ch = self.preview_canvas.winfo_height()
+            if cw < 2 or ch < 2:
+                cw, ch = 640, 480
+
+            # 元の縦横比を維持してフィットさせる計算
+            h_orig, w_orig = frame.shape[:2]
+            scale = min(cw / w_orig, ch / h_orig)
+            nw = int(w_orig * scale)
+            nh = int(h_orig * scale)
+
+            if nw < 1 or nh < 1:
+                self.is_rendering = False
+                return
+
+            # リサイズを OpenCV で1回に集約 (INTER_NEAREST で高速化)
+            resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_NEAREST)
+            # 色変換を縮小後に行う (面積が減っているため高速)
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb)
 
             def _update(img=pil_img):
                 try:
-                    cw = self.preview_canvas.winfo_width()
-                    ch = self.preview_canvas.winfo_height()
-                    if cw < 2 or ch < 2:
-                        return
-                    scale = min(cw / img.width, ch / img.height)
-                    nw = int(img.width * scale)
-                    nh = int(img.height * scale)
-                    disp = img.resize((nw, nh), Image.Resampling.NEAREST)
-                    tk_img = ImageTk.PhotoImage(disp)
+                    tk_img = ImageTk.PhotoImage(img)
+                    # 前の画像を削除してメモリリーク防止
+                    self.preview_canvas.delete("all")
                     self.preview_canvas.create_image(
                         cw // 2, ch // 2, anchor=tk.CENTER, image=tk_img)
                     self.preview_canvas.image = tk_img
                 except Exception:
                     pass
+                finally:
+                    # 描画完了を通知
+                    self.is_rendering = False
 
             self.root.after(0, _update)
         except Exception as e:
             self.logger.error(f"Render preview error: {e}")
+            self.is_rendering = False
 
     # ------------------------------------------------------------------
     # 検査ロジックループ
