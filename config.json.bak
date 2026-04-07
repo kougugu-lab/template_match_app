@@ -31,7 +31,7 @@
   },
   "image_processing": {
     "threshold": 226,
-    "threshold_mode": "simple",
+    "threshold_mode": "adaptive",
     "ada_block": 63,
     "ada_c": -12,
     "white_ratio": 52,
@@ -42,12 +42,19 @@
     "filter_min_area": 5265,
     "filter_max_area": 9778,
     "roi": [
-      0.25136612021857924,
-      0.14845173041894352,
-      0.8592896174863388,
-      0.9808743169398907
+      0.1721311475409836,
+      0.17395264116575593,
+      0.9453551912568307,
+      0.9207650273224044
     ],
-    "decision_threshold": 0.86
+    "decision_threshold": 0.86,
+    "clahe_clip": 2.8,
+    "brightness": 1.8,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "gamma": 1.0,
+    "blur": 0.0,
+    "sharpen": 0.0
   },
   "flags": {
     "CLAHE_FLAG": true,
