@@ -24,7 +24,7 @@ from .constants import (
     FONT_FAMILY, FONT_NORMAL, FONT_BOLD, FONT_LARGE, FONT_SET_LBL
 )
 from .widgets import create_card, Tooltip
-from .engine import cv_imread, cv_imwrite
+from .engine import cv_imread, cv_imwrite, InspectionEngine
 
 
 class EditorView(tk.Frame):
