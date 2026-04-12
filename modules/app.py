@@ -291,11 +291,20 @@ class TMApp:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.lb_history.configure(yscrollcommand=sb.set)
 
-        btn_clear_hist = tk.Button(pnl, text="履歴リセット", font=FONT_NORMAL,
+        hist_btn_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
+        hist_btn_frm.pack(fill=tk.X, padx=10, pady=5)
+
+        btn_clear_hist = tk.Button(hist_btn_frm, text="履歴リセット", font=FONT_NORMAL,
                   bg="#546E7A", fg="white", relief="flat",
                   command=self._clear_history)
-        btn_clear_hist.pack(fill=tk.X, padx=10, pady=5)
+        btn_clear_hist.pack(side=tk.LEFT, fill=tk.X, expand=True)
         Tooltip(btn_clear_hist, "画面に表示されているNG履歴リストを消去します")
+
+        btn_open_results = tk.Button(hist_btn_frm, text="結果フォルダ", font=FONT_NORMAL,
+                  bg="#546E7A", fg="white", relief="flat",
+                  command=self._open_results_folder)
+        btn_open_results.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+        Tooltip(btn_open_results, "画像が保存されている結果フォルダを開きます")
 
         btn_buzzer_stop = tk.Button(pnl, text="ブザー停止", font=FONT_BOLD,
                   bg=COLOR_NG, fg="white", height=2, relief="flat",
@@ -514,6 +523,24 @@ class TMApp:
         if messagebox.askyesno("確認", "NG履歴を削除しますか？", parent=self.root):
             self.ng_history.clear()
             self.lb_history.delete(0, tk.END)
+
+    def _open_results_folder(self):
+        """結果画像フォルダをOSのファイルマネージャーで開く"""
+        base = self.cfg.get("storage", "results_dir", default="./results")
+        folder = Path(base) / "images"
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(folder))
+            elif sys.platform == "linux":
+                import subprocess
+                subprocess.Popen(["xdg-open", str(folder)])
+            else:
+                import subprocess
+                subprocess.Popen(["open", str(folder)])
+        except Exception as e:
+            self.logger.error(f"フォルダを開けませんでした: {e}")
+            messagebox.showerror("エラー", f"フォルダを開けませんでした:\n{folder}", parent=self.root)
 
     def _open_settings(self):
         """設定ダイアログを開く"""
