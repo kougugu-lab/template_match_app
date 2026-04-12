@@ -32,8 +32,7 @@ DEFAULT_CONFIG = {
         "decision_threshold": 0.8
     },
     "flags": {
-        "CLAHE_FLAG": True, "CONTOURS_FLAG": True, "MASK_SECOND_FLAG": True,
-        "SIO_FLAG": True, "LENGTH_FILTER_FLAG": True, "AREA_FILTER_FLAG": True,
+        "CONTOURS_FLAG": True,
         "SAVE_DEBUG_FLAG": False
     },
     "storage": {
@@ -76,7 +75,7 @@ class ConfigManager:
             for k in ["mask_lh_up", "mask_lh_down", "mask_rh_up", "mask_rh_down", "mask_top", "mask_bottom"]:
                 data["image_processing"].pop(k, None)
         if "flags" in data:
-            for k in ["THRESHOLD_FLAG", "ADAPTIVE_FLAG"]:
+            for k in ["CLAHE_FLAG", "MASK_SECOND_FLAG", "SIO_FLAG", "LENGTH_FILTER_FLAG", "AREA_FILTER_FLAG", "THRESHOLD_FLAG", "ADAPTIVE_FLAG"]:
                 data["flags"].pop(k, None)
         return data
 

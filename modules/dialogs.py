@@ -23,6 +23,7 @@ from .constants import (
     VALID_BCM_PINS, RES_OPTIONS_RAW, CAM_PROP_MAP
 )
 from .widgets import create_card, Tooltip, HelpWindow
+from .hardware import OutputDevice
 
 
 class SettingsDialog(tk.Toplevel):
@@ -41,6 +42,9 @@ class SettingsDialog(tk.Toplevel):
         self._adj_cap = None
         self._adj_current_frame = None
         self._frame_lock = threading.Lock()
+        self._active_test_devs = {}  # GPIOテスト中のデバイス保持 {button_widget: [OutputDevice, ...]}
+        self._active_input_devs = {} # GPIO入力モニタリング用デバイス保持 {pin_number: DigitalInputDevice}
+        self._input_status_labels = {} # UIのラベル保持 {var_name: tk.Label}
 
         self.title("詳細設定")
         self.geometry("1400x900")
@@ -52,6 +56,9 @@ class SettingsDialog(tk.Toplevel):
         self._build_ui()
         self._load_values()
         self._adj_loop()
+        
+        # 入力ピンのモニタリング開始
+        self.after(200, self._poll_inputs)
 
     def _build_ui(self):
         """UI全体を構築"""
@@ -213,6 +220,16 @@ class SettingsDialog(tk.Toplevel):
                 action = self._auto_search_exposure if k == "exposure" else lambda key=k: self._auto_tune_prop(key)
                 tk.Button(props_f, text="自動探索", font=FONT_NORMAL, bg="#455A64", fg="white", relief="flat", padx=8,
                           command=action).grid(row=r, column=2, padx=(0, 10), pady=2)
+            
+            if k == "focus":
+                af_var = tk.IntVar()
+                self.cam_props["autofocus"] = af_var
+                af_var.trace_add("write", lambda *a, v=af_var: _apply_cam_prop("autofocus", v))
+                chk_af = tk.Checkbutton(props_f, text="オートフォーカス", variable=af_var, font=FONT_SET_VAL,
+                                        bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                                        selectcolor=COLOR_BG_INPUT, activebackground=COLOR_BG_PANEL, activeforeground=COLOR_TEXT_MAIN)
+                chk_af.grid(row=r, column=3, padx=10, pady=2, sticky="w")
+                Tooltip(chk_af, "カメラ本体のオートフォーカス機能を有効にします。ON時はマニュアル値は無視されます。")
             
             r += 1
 
@@ -503,9 +520,17 @@ class SettingsDialog(tk.Toplevel):
             # 出力ピン（OK/NG）のみテストボタンを表示
             if "out" in pname.lower() or "log" in pname.lower():
                 btn_test = tk.Button(sf, text="テスト", font=(FONT_FAMILY, 10), bg="#546E7A", fg="white",
-                                     relief="flat", padx=8, command=lambda v=var: self._test_gpio_pulse(v))
+                                     relief="flat", padx=8)
+                btn_test.config(command=lambda v=var, b=btn_test: self._toggle_gpio_test(v, b))
                 btn_test.grid(row=row, column=2, padx=5, pady=4)
-                Tooltip(btn_test, "クリックするとこのピンを0.5秒間だけON（信号出力）にします")
+                Tooltip(btn_test, "クリックするとこのピンを出力(ON)にし続けます。もう一度押すと停止します。")
+            elif "start" in pname.lower() or "in" in pname.lower():
+                # 入力ピンにはステータスモニターを表示
+                lbl_status = tk.Label(sf, text="OFF", font=FONT_SET_VAL,
+                                      bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB, width=8)
+                lbl_status.grid(row=row, column=2, padx=5, pady=4)
+                self._input_status_labels[pname] = lbl_status
+                Tooltip(lbl_status, "現在の入力状態をリアルタイムで表示します")
 
         # 仕様マッピングセクション
         self._build_spec_mapping(sf, len(pin_descriptions), tab)
@@ -575,9 +600,10 @@ class SettingsDialog(tk.Toplevel):
                 self._mark_changed()
 
             btn_test = tk.Button(f, text="テスト", font=(FONT_FAMILY, 9), bg="#546E7A", fg="white",
-                                 relief="flat", padx=6, command=lambda v=pins_var: self._test_gpio_pulse(v))
+                                 relief="flat", padx=6)
+            btn_test.config(command=lambda v=pins_var, b=btn_test: self._toggle_gpio_test(v, b))
             btn_test.pack(side=tk.LEFT, padx=3)
-            Tooltip(btn_test, "現在入力されているピンを0.5秒間テスト発火させます")
+            Tooltip(btn_test, "現在入力されているピンを出力(ON)にし続けます。もう一度押すと停止します。")
 
             tk.Button(f, text="削除", font=(FONT_FAMILY, 9), bg=COLOR_NG, fg="white",
                       relief="flat", padx=6, command=_delete).pack(side=tk.LEFT, padx=5)
@@ -763,15 +789,10 @@ class SettingsDialog(tk.Toplevel):
 
     def _build_adjust_sliders(self):
         sf = self.adj_sf
+        ip = self.cfg.data.get("image_processing", {})
 
-        def section(title):
-            tk.Label(sf, text=f"  {title}", font=FONT_SET_LBL,
-                     bg=COLOR_BG_PANEL, fg=COLOR_ACCENT, anchor="w").pack(
-                fill=tk.X, pady=(12, 2))
-            tk.Frame(sf, bg=COLOR_BORDER, height=1).pack(fill=tk.X, padx=5, pady=2)
-
-        def slider(lbl, var, frm, to, res=1, tip="", tooltip=""):
-            f = tk.Frame(sf, bg=COLOR_BG_PANEL)
+        def slider(parent, lbl, var, frm, to, res=1, tip="", tooltip=""):
+            f = tk.Frame(parent, bg=COLOR_BG_PANEL)
             f.pack(fill=tk.X, padx=10, pady=2)
             tk.Label(f, text=lbl, font=FONT_NORMAL, bg=COLOR_BG_PANEL,
                      fg=COLOR_TEXT_SUB, width=16, anchor="w").pack(side=tk.LEFT)
@@ -787,10 +808,10 @@ class SettingsDialog(tk.Toplevel):
                 Tooltip(s, msg)
             return s
 
-        ip = self.cfg.data.get("image_processing", {})
+        # 1. 前処理設定
+        c1, c1_in = create_card(sf, "1. 前処理設定")
+        c1.pack(fill=tk.X, pady=5, padx=5)
 
-
-        section("1. 前処理設定")
         self.v_clahe = tk.DoubleVar(value=ip.get("clahe_clip", 0.0))
         self.v_bright = tk.DoubleVar(value=ip.get("brightness", 1.0))
         self.v_contrast = tk.DoubleVar(value=ip.get("contrast", 1.0))
@@ -799,29 +820,34 @@ class SettingsDialog(tk.Toplevel):
         self.v_blur = tk.DoubleVar(value=ip.get("blur", 0.0))
         self.v_sharp = tk.DoubleVar(value=ip.get("sharpen", 0.0))
 
-        slider("輝度正規化", self.v_clahe, 0.0, 5.0, 0.1, tip="コントラストを均一化し、影や反射の影響を抑えます。")
-        slider("明るさ", self.v_bright, 0.1, 3.0, 0.05, tip="画像全体の明るさを調整します。")
-        slider("コントラスト", self.v_contrast, 0.1, 3.0, 0.05, tip="明暗の差を強調します。")
-        slider("彩度", self.v_saturation, 0.1, 3.0, 0.05, tip="色の鮮やかさを変えます。")
-        slider("ガンマ", self.v_gamma, 0.1, 5.0, 0.05, tip="中間色の明るさを補正します。")
-        slider("ぼかし", self.v_blur, 0.0, 5.0, 0.1, tip="ノイズを低減します。")
-        slider("シャープ", self.v_sharp, 0.0, 5.0, 0.1, tip="輪郭を強調します。")
+        slider(c1_in, "輝度正規化", self.v_clahe, 0.0, 5.0, 0.1, tip="コントラストを均一化し、影や反射の影響を抑えます。")
+        slider(c1_in, "明るさ", self.v_bright, 0.1, 3.0, 0.05, tip="画像全体の明るさを調整します。")
+        slider(c1_in, "コントラスト", self.v_contrast, 0.1, 3.0, 0.05, tip="明暗の差を強調します。")
+        slider(c1_in, "彩度", self.v_saturation, 0.1, 3.0, 0.05, tip="色の鮮やかさを変えます。")
+        slider(c1_in, "ガンマ", self.v_gamma, 0.1, 5.0, 0.05, tip="中間色の明るさを補正します。")
+        slider(c1_in, "ぼかし", self.v_blur, 0.0, 5.0, 0.1, tip="ノイズを低減します。")
+        slider(c1_in, "シャープ", self.v_sharp, 0.0, 5.0, 0.1, tip="輪郭を強調します。")
 
-        section("2. 検査領域の設定")
-        tk.Label(sf, text="※右側のプレビュー画面でマウスをドラッグし、\n  検査をおこなう範囲（黄色枠）を指定してください。",
+        # 2. 検査領域の設定
+        c2, c2_in = create_card(sf, "2. 検査領域の設定")
+        c2.pack(fill=tk.X, pady=5, padx=5)
+        tk.Label(c2_in, text="※右側のプレビュー画面でマウスをドラッグし、\n  検査をおこなう範囲（黄色枠）を指定してください。",
                  font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, justify=tk.LEFT).pack(anchor="w", padx=15, pady=5)
 
-        section("3. 二値化設定")
-        btn_auto_all = tk.Button(sf, text="AI全自動調整", font=FONT_BOLD,
+        # 3. 二値化設定
+        c3, c3_in = create_card(sf, "3. 二値化設定")
+        c3.pack(fill=tk.X, pady=5, padx=5)
+
+        btn_auto_all = tk.Button(c3_in, text="AI全自動調整", font=FONT_BOLD,
                     bg=COLOR_OK, fg="black", relief="flat",
                     command=self._auto_tune_image_processing)
         btn_auto_all.pack(fill=tk.X, padx=10, pady=5)
         Tooltip(btn_auto_all, "二値化モードからしきい値、フィルタまで全てを自動走査して最適な処理を探します。")
 
-        tk.Label(sf, text="二値化モード:", font=FONT_NORMAL,
+        tk.Label(c3_in, text="二値化モード:", font=FONT_NORMAL,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(anchor="w", padx=10)
         self.thr_mode_var = tk.StringVar(value=ip.get("threshold_mode", "simple"))
-        mode_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
+        mode_f = tk.Frame(c3_in, bg=COLOR_BG_PANEL)
         mode_f.pack(fill=tk.X, padx=10, pady=2)
         for txt, val in [("固定しきい値", "simple"), ("自動適応", "adaptive"), ("動的割合", "dynamic")]:
             tk.Radiobutton(mode_f, text=txt, variable=self.thr_mode_var, value=val,
@@ -834,11 +860,10 @@ class SettingsDialog(tk.Toplevel):
         self.v_ada_c = tk.IntVar(value=ip.get("ada_c", 2))
         self.v_white_ratio = tk.IntVar(value=ip.get("white_ratio", 3))
 
-        # スライダーとラベルをセットで保持
-        f_thr, s_thr = self._slider_with_label(sf, "固定しきい値", self.v_threshold, 0, 255, tip="固定モード時：対象を浮き上がらせる境界の明るさ。")
-        f_ada_b, s_ada_b = self._slider_with_label(sf, "自動適応: 範囲", self.v_ada_block, 3, 99, 2, tip="自動適応モード時：明るさを計算する範囲（奇数指定）。")
-        f_ada_c, s_ada_c = self._slider_with_label(sf, "自動適応: 調整", self.v_ada_c, -30, 30, tip="自動適応モード時：しきい値からの微調整オフセット。")
-        f_white, s_white = self._slider_with_label(sf, "目標白面積率(%)", self.v_white_ratio, 1, 100, tip="動的割合モード時：白くしたい部分の割合。")
+        f_thr, s_thr = self._slider_with_label(c3_in, "固定しきい値", self.v_threshold, 0, 255, tip="固定モード時：対象を浮き上がらせる境界の明るさ。")
+        f_ada_b, s_ada_b = self._slider_with_label(c3_in, "自動適応: 範囲", self.v_ada_block, 3, 99, 2, tip="自動適応モード時：明るさを計算する範囲（奇数指定）。")
+        f_ada_c, s_ada_c = self._slider_with_label(c3_in, "自動適応: 調整", self.v_ada_c, -30, 30, tip="自動適応モード時：しきい値からの微調整オフセット。")
+        f_white, s_white = self._slider_with_label(c3_in, "目標白面積率(%)", self.v_white_ratio, 1, 100, tip="動的割合モード時：白くしたい部分の割合。")
 
         self.bin_widgets = {
             "threshold": [s_thr],
@@ -846,15 +871,14 @@ class SettingsDialog(tk.Toplevel):
             "ada_c": [s_ada_c],
             "white_ratio": [s_white]
         }
-
-
-
-        # 変数監視の開始
         self.thr_mode_var.trace_add("write", self._update_thr_ui)
-        self._update_thr_ui() # 初期状態反映
+        self._update_thr_ui()
 
-        section("4. 対象抽出設定")
-        learn_btn_f = tk.Frame(sf, bg=COLOR_BG_PANEL)
+        # 4. 対象抽出設定
+        c4, c4_in = create_card(sf, "4. 対象抽出設定")
+        c4.pack(fill=tk.X, pady=5, padx=5)
+
+        learn_btn_f = tk.Frame(c4_in, bg=COLOR_BG_PANEL)
         learn_btn_f.pack(fill=tk.X, padx=10, pady=2)
         btn_learn = tk.Button(learn_btn_f, text="現在の映像から自動学習", font=FONT_NORMAL,
                    bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat",
@@ -862,26 +886,38 @@ class SettingsDialog(tk.Toplevel):
         btn_learn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
         Tooltip(btn_learn, "現在の二値化結果から最大の輪郭を計測し、面積・周長のフィルタ範囲を自動設定します。")
 
-
-
         self.v_min_len = tk.IntVar(value=ip.get("filter_min_len", 200))
         self.v_max_len = tk.IntVar(value=ip.get("filter_max_len", 1500))
         self.v_min_area = tk.IntVar(value=ip.get("filter_min_area", 10000))
         self.v_max_area = tk.IntVar(value=ip.get("filter_max_area", 35000))
-        slider("最小周長", self.v_min_len, 0, 5000, 10, tooltip="これより短い小さい輪郭（ノイズ）を無視します。")
-        slider("最大周長", self.v_max_len, 0, 10000, 10, tooltip="大きすぎる輪郭を無視します。")
-        slider("最小面積", self.v_min_area, 0, 100000, 100, tooltip="これより小さい面積を無視します。")
-        slider("最大面積", self.v_max_area, 0, 500000, 100, tooltip="大きすぎる面積を無視します。")
+        slider(c4_in, "最小周長", self.v_min_len, 0, 5000, 10, tooltip="これより短い小さい輪郭（ノイズ）を無視します。")
+        slider(c4_in, "最大周長", self.v_max_len, 0, 10000, 10, tooltip="大きすぎる輪郭を無視します。")
+        slider(c4_in, "最小面積", self.v_min_area, 0, 100000, 100, tooltip="これより小さい面積を無視します。")
+        slider(c4_in, "最大面積", self.v_max_area, 0, 500000, 100, tooltip="大きすぎる面積を無視します。")
 
-        section("5. 形状補正")
+        # 5. 形状補正
+        c5, c5_in = create_card(sf, "5. 形状補正")
+        c5.pack(fill=tk.X, pady=5, padx=5)
+
+        flags = self.cfg.data.get("flags", {})
+        self.v_contours_flag = tk.BooleanVar(value=flags.get("CONTOURS_FLAG", True))
+        cb_contours = tk.Checkbutton(c5_in, text="輪郭抽出と射影変換を有効にする", variable=self.v_contours_flag,
+                                     font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                                     selectcolor=COLOR_BG_INPUT, command=self._mark_changed)
+        cb_contours.pack(anchor="w", padx=15, pady=2)
+        Tooltip(cb_contours, "ワークの輪郭を見つけ、長方形に切り出して正面を向くように補正します。OFFの場合はカメラ映像全体でマッチングします。")
+
         self.v_affine_h = tk.IntVar(value=ip.get("affine_h_mm", 50))
         self.v_affine_w = tk.IntVar(value=ip.get("affine_w_mm", 40))
-        slider("変換高さ(mm)", self.v_affine_h, 1, 200, tooltip="切り出し後の垂直方向の実寸(mm)目安。縦横比を正しく補正します。")
-        slider("変換幅(mm)", self.v_affine_w, 1, 200, tooltip="切り出し後の水平方向の実寸(mm)目安。")
+        slider(c5_in, "変換高さ(mm)", self.v_affine_h, 1, 200, tooltip="切り出し後の垂直方向の実寸(mm)目安。縦横比を正しく補正します。")
+        slider(c5_in, "変換幅(mm)", self.v_affine_w, 1, 200, tooltip="切り出し後の水平方向の実寸(mm)目安。")
 
-        section("6. マッチング設定")
+        # 6. マッチング設定
+        c6, c6_in = create_card(sf, "6. マッチング設定")
+        c6.pack(fill=tk.X, pady=5, padx=5)
+
         self.v_decision_thr = tk.DoubleVar(value=ip.get("decision_threshold", 0.8))
-        slider("マッチング判定値", self.v_decision_thr, 0.0, 1.0, 0.01,
+        slider(c6_in, "マッチング判定値", self.v_decision_thr, 0.0, 1.0, 0.01,
                tooltip="マスター画像との類似度（スコア）がこの値を上回れば『一致(OK)』と判定します。")
 
     def _start_adj_preview(self):
@@ -1213,84 +1249,76 @@ class SettingsDialog(tk.Toplevel):
         tab = tk.Frame(self.notebook, bg=COLOR_BG_MAIN)
         self.notebook.add(tab, text="画素数・保存")
 
-        outer, inner_wrap = create_card(tab, "解像度・保存設定")
-        outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
         # Scrollable panel for resolution/storage settings
-        scroll_c = tk.Canvas(inner_wrap, bg=COLOR_BG_PANEL, highlightthickness=0)
-        vsb = ttk.Scrollbar(inner_wrap, orient="vertical", command=scroll_c.yview)
-        inner = tk.Frame(scroll_c, bg=COLOR_BG_PANEL)
+        scroll_c = tk.Canvas(tab, bg=COLOR_BG_MAIN, highlightthickness=0)
+        vsb = ttk.Scrollbar(tab, orient="vertical", command=scroll_c.yview)
+        inner = tk.Frame(scroll_c, bg=COLOR_BG_MAIN)
         inner.bind("<Configure>", lambda e: scroll_c.configure(scrollregion=scroll_c.bbox("all")))
         scroll_c.create_window((0, 0), window=inner, anchor="nw")
         scroll_c.configure(yscrollcommand=vsb.set)
-        scroll_c.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+        scroll_c.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        vsb.pack(side="right", fill="y", pady=10)
         scroll_c.bind("<MouseWheel>", lambda e: scroll_c.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         res_full = ["320x240 (QVGA)", "640x480 (VGA)", "1280x720 (HD)",
                     "1920x1080 (Full HD)", "3840x2160 (4K)"]
         res_save = res_full + ["保存しない"]
 
-        def row(parent, label, var, options, r, tooltip=""):
-            tk.Label(parent, text=label, font=FONT_SET_LBL, bg=COLOR_BG_PANEL,
-                     fg=COLOR_TEXT_SUB, width=22, anchor="w").grid(
-                row=r, column=0, padx=15, pady=8, sticky="w")
-            cb = ttk.Combobox(parent, textvariable=var, values=options,
+        def row(parent, label, var, options, tooltip=""):
+            f = tk.Frame(parent, bg=COLOR_BG_PANEL)
+            f.pack(fill=tk.X, pady=4)
+            tk.Label(f, text=label, font=FONT_SET_LBL, bg=COLOR_BG_PANEL,
+                     fg=COLOR_TEXT_SUB, width=22, anchor="w").pack(side=tk.LEFT, padx=15)
+            cb = ttk.Combobox(f, textvariable=var, values=options,
                               state="readonly", font=FONT_SET_VAL, width=24)
-            cb.grid(row=r, column=1, padx=10, pady=8)
+            cb.pack(side=tk.LEFT, padx=10)
             var.trace_add("write", lambda *a: self._mark_changed())
             if tooltip:
                 Tooltip(cb, tooltip)
 
-        grid_f = tk.Frame(inner, bg=COLOR_BG_PANEL)
-        grid_f.pack(fill=tk.X)
-
-        tk.Label(grid_f, text="【基本撮影設定】", font=FONT_BOLD,
-                 bg=COLOR_BG_PANEL, fg=COLOR_ACCENT).grid(
-            row=0, column=0, padx=15, pady=(15, 5), sticky="w")
+        cap_card, cap_inner = create_card(inner, "基本撮影設定")
+        cap_card.pack(fill=tk.X, pady=5, padx=5)
         self.res_capture_var = tk.StringVar()
-        row(grid_f, "撮影解像度:", self.res_capture_var, res_full, 1,
+        row(cap_inner, "撮影解像度:", self.res_capture_var, res_full,
             "カメラから取得する元画像サイズ。全処理の最大値となります。")
 
-        tk.Label(grid_f, text="【プレビュー設定】", font=FONT_BOLD,
-                 bg=COLOR_BG_PANEL, fg=COLOR_ACCENT).grid(
-            row=2, column=0, padx=15, pady=(15, 5), sticky="w")
+        prev_card, prev_inner = create_card(inner, "プレビュー設定")
+        prev_card.pack(fill=tk.X, pady=5, padx=5)
         self.res_preview_var = tk.StringVar()
         preview_opts = ["プレビューなし", "320x240 (QVGA)", "640x480 (VGA)", "1280x720 (HD)"]
-        row(grid_f, "プレビュー解像度:", self.res_preview_var, preview_opts, 3,
+        row(prev_inner, "プレビュー解像度:", self.res_preview_var, preview_opts,
             "メイン画面のプレビューサイズ。小さくするほどCPU負荷が下がります。")
 
-        tk.Label(grid_f, text="【保存設定】", font=FONT_BOLD,
-                 bg=COLOR_BG_PANEL, fg=COLOR_ACCENT).grid(
-            row=4, column=0, padx=15, pady=(15, 5), sticky="w")
+        save_card, save_inner = create_card(inner, "保存設定")
+        save_card.pack(fill=tk.X, pady=5, padx=5)
         self.res_ng_var = tk.StringVar()
         self.res_ok_var = tk.StringVar()
-        row(grid_f, "NG保存解像度:", self.res_ng_var, res_save, 5,
+        row(save_inner, "NG保存解像度:", self.res_ng_var, res_save,
             "NG判定時の保存サイズ。通常は最大解像度を推奨します。")
-        row(grid_f, "OK保存解像度:", self.res_ok_var, res_save, 6,
+        row(save_inner, "OK保存解像度:", self.res_ok_var, res_save,
             "OK判定時の保存サイズ。容量節約のため小さめに設定できます。")
 
-        tk.Label(grid_f, text="【自動容量管理】", font=FONT_BOLD,
-                 bg=COLOR_BG_PANEL, fg=COLOR_ACCENT).grid(
-            row=7, column=0, padx=15, pady=(15, 5), sticky="w")
+        auto_card, auto_inner = create_card(inner, "自動容量管理")
+        auto_card.pack(fill=tk.X, pady=5, padx=5)
         self.auto_delete_var = tk.BooleanVar()
-        cb_auto = tk.Checkbutton(grid_f, text="上限超過時に古い画像を自動削除",
+        cb_auto = tk.Checkbutton(auto_inner, text="上限超過時に古い画像を自動削除",
                        variable=self.auto_delete_var, font=FONT_NORMAL,
                        bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
                        selectcolor=COLOR_BG_INPUT,
                        command=self._mark_changed)
-        cb_auto.grid(row=8, column=0, padx=15, pady=5, sticky="w")
+        cb_auto.pack(anchor="w", padx=15, pady=5)
         Tooltip(cb_auto, "ディスク容量が一杯になった際、古い日付の画像フォルダから順に自動削除します。")
 
-        tk.Label(grid_f, text="保存上限(GB):", font=FONT_SET_LBL,
-                 bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=22, anchor="w").grid(
-            row=9, column=0, padx=15, pady=5, sticky="w")
+        f_gb = tk.Frame(auto_inner, bg=COLOR_BG_PANEL)
+        f_gb.pack(fill=tk.X, pady=4)
+        tk.Label(f_gb, text="保存上限(GB):", font=FONT_SET_LBL,
+                 bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=22, anchor="w").pack(side=tk.LEFT, padx=15)
         self.max_gb_var = tk.IntVar()
-        sp_gb = tk.Spinbox(grid_f, textvariable=self.max_gb_var, from_=1, to=1000,
+        sp_gb = tk.Spinbox(f_gb, textvariable=self.max_gb_var, from_=1, to=1000,
                     font=FONT_SET_VAL, bg=COLOR_BG_INPUT, fg="white",
                     buttonbackground="#78909C", bd=1, relief="solid", width=8,
                     command=self._mark_changed)
-        sp_gb.grid(row=9, column=1, padx=10, pady=5)
+        sp_gb.pack(side=tk.LEFT, padx=10)
         Tooltip(sp_gb, "自動削除を発動するストレージ使用量の上限（ギガバイト単位）。")
 
     # ---------------------------------------------------------------
@@ -1323,11 +1351,6 @@ class SettingsDialog(tk.Toplevel):
         grid_f.pack(fill=tk.X, pady=5)
 
         flag_descriptions = {
-            "CONTOURS_FLAG": ("輪郭抽出・形状補正", "ワークの輪郭を見つけ、正面を向くように補正します。"),
-            "MASK_SECOND_FLAG": ("2回目トライ", "1回目で失敗した場合にマスク条件を緩めて再試行します。"),
-            "SIO_FLAG": ("SiO信号待ち", "GPIOからのトリガー信号が入るまで待機します。"),
-            "LENGTH_FILTER_FLAG": ("周長フィルタ", "輪郭の長さによるノイズ除去を行います。"),
-            "AREA_FILTER_FLAG": ("面積フィルタ", "輪郭の内部面積によるノイズ除去を行います。"),
             "SAVE_DEBUG_FLAG": ("デバッグ画像保存", "処理過程の画像を保存します（ストレージ容量に注意）。"),
         }
         self.flag_vars = {}
@@ -1447,8 +1470,14 @@ class SettingsDialog(tk.Toplevel):
         
         for k, var in self.cam_props.items():
             try:
-                self.cfg.set("camera", k, float(var.get()) if "." in var.get() else int(var.get()))
-            except ValueError:
+                val = var.get()
+                if isinstance(val, str):
+                    # 小数点が含まれる場合はfloat、そうでなければintとして保存
+                    self.cfg.set("camera", k, float(val) if "." in val else int(val))
+                else:
+                    # すでに数値型(IntVarなど)の場合はそのままセット
+                    self.cfg.set("camera", k, val)
+            except (ValueError, TypeError):
                 pass
 
         for pname, var in self.gpio_vars.items():
@@ -1505,6 +1534,7 @@ class SettingsDialog(tk.Toplevel):
         self.cfg.set("camera", "preview_res", raw_res(self.res_preview_var.get()))
 
         flags = self.cfg.data.setdefault("flags", {})
+        flags["CONTOURS_FLAG"] = self.v_contours_flag.get()
         for fname, var in self.flag_vars.items():
             flags[fname] = var.get()
 
@@ -1598,48 +1628,97 @@ class SettingsDialog(tk.Toplevel):
             )
         })
 
-    def _test_gpio_pulse(self, var):
-        """GPIO出力を0.5秒間テスト発火させる"""
-        try:
-            val_raw = var.get().strip()
-            if not val_raw:
-                return
-                
-            # カンマ区切りの場合は複数を順次/同時発火（今回は先頭のみ or 全て）
-            pins = []
-            for p_s in val_raw.split(","):
-                p_s = p_s.strip()
-                if p_s.isdigit():
-                    p = int(p_s)
-                    if 0 < p <= 40:
-                        pins.append(p)
-            
-            if not pins:
-                return
-            
-            self.logger.info(f"GPIOテスト出力開始: BCM {pins}")
-            devs = []
-            for p in pins:
-                devs.append(OutputDevice(p))
-            
+    def _toggle_gpio_test(self, var, btn):
+        """GPIOテスト出力のON/OFFを切り替える"""
+        if btn in self._active_test_devs:
+            # 停止処理
+            devs = self._active_test_devs.pop(btn)
             for d in devs:
-                d.on()
-            
-            # 500ms後にOFF
-            def _off():
+                try:
+                    d.off()
+                    d.close()
+                except:
+                    pass
+            btn.configure(text="テスト", bg="#546E7A", fg="white")
+        else:
+            # 開始処理
+            try:
+                val_raw = var.get().strip()
+                if not val_raw: return
+                
+                pins = []
+                for p_s in val_raw.split(","):
+                    p_s = p_s.strip()
+                    if p_s.isdigit():
+                        p = int(p_s)
+                        if 0 < p <= 40: pins.append(p)
+                if not pins: return
+
+                devs = []
+                for p in pins:
+                    devs.append(OutputDevice(p))
+                
                 for d in devs:
+                    d.on()
+                
+                self._active_test_devs[btn] = devs
+                # inspection_app スタイル: 出力中はオレンジ色の「停止」ボタン
+                btn.configure(text="停止", bg=COLOR_WARNING, fg="black")
+                
+            except Exception as e:
+                print(f"GPIOテスト失敗: {e}")
+                messagebox.showerror("テストエラー", f"GPIOの操作に失敗しました: {e}", parent=self)
+
+    def _poll_inputs(self):
+        """設定画面表示中に有効な入力ピンのON/OFF状態を監視してUIに反映する"""
+        if not self.winfo_exists():
+            return
+            
+        from .hardware import DigitalInputDevice
+        
+        # 必要なピンを洗い出す
+        needed_pins = {} # {var_name: pin_num}
+        for pname, lbl in self._input_status_labels.items():
+            if pname in self.gpio_vars:
+                val_raw = self.gpio_vars[pname].get().strip()
+                if val_raw.isdigit():
+                    pin = int(val_raw)
+                    if 0 < pin <= 40:
+                        needed_pins[pname] = pin
+
+        # 古いデバイスのクリーンアップ
+        current_active_pins = set(self._active_input_devs.keys())
+        needed_pin_nums = set(needed_pins.values())
+        
+        for pin in list(current_active_pins - needed_pin_nums):
+            self._active_input_devs[pin].close()
+            del self._active_input_devs[pin]
+            
+        # UIの更新と新規デバイスの生成
+        for pname, lbl in self._input_status_labels.items():
+            if pname in needed_pins:
+                pin = needed_pins[pname]
+                if pin not in self._active_input_devs:
                     try:
-                        d.off()
-                        d.close()
+                        self._active_input_devs[pin] = DigitalInputDevice(pin, pull_up=True)
+                    except Exception as e:
+                        print(f"GPIO 入力モニタに失敗 (Pin {pin}): {e}")
+                
+                # 状態を読み取る
+                if pin in self._active_input_devs:
+                    try:
+                        state = self._active_input_devs[pin].is_active
+                        if state:
+                            lbl.config(text="ON", bg=COLOR_ACCENT, fg="black")
+                        else:
+                            lbl.config(text="OFF", bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB)
                     except:
                         pass
-                self.logger.info(f"GPIOテスト出力終了: BCM {pins}")
-
-            self.after(500, _off)
-            
-        except Exception as e:
-            self.logger.error(f"GPIOテスト失敗: {e}")
-            messagebox.showerror("テストエラー", f"GPIOの操作に失敗しました: {e}", parent=self)
+            else:
+                # 未設定状態
+                lbl.config(text="---", bg=COLOR_BG_MAIN, fg=COLOR_TEXT_SUB)
+        
+        self.after(100, self._poll_inputs)
 
     def _slider_with_label(self, parent, lbl, var, frm, to, res=1, tip=""):
         """スライダーとラベルを含むフレームを作成し、スライダーを返す"""
@@ -1671,6 +1750,19 @@ class SettingsDialog(tk.Toplevel):
             pass
 
     def destroy(self):
+        # 通電中のテスト出力があれば停止
+        for btn, devs in self._active_test_devs.items():
+            for d in devs:
+                try: d.off(); d.close()
+                except: pass
+        self._active_test_devs.clear()
+        
+        # モニタリング用の入力デバイスを解放
+        for d in self._active_input_devs.values():
+            try: d.close()
+            except: pass
+        self._active_input_devs.clear()
+
         self._stop_cam_preview()
         self._stop_adj_preview()
         # いかなる手段で画面が閉じられても、親画面へカメラ・GPIOの再起動を通知する

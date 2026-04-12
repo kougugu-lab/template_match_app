@@ -2,9 +2,9 @@
   "camera": {
     "index": 0,
     "resolution": "1920x1080",
-    "preview_res": "640x480",
-    "gain": 70,
-    "exposure": -7,
+    "preview_res": "1280x720",
+    "gain": 76,
+    "exposure": -6,
     "brightness": 0,
     "contrast": 50,
     "saturation": 50,
@@ -12,7 +12,8 @@
     "wb_temp": 7200,
     "focus": 290,
     "zoom": 1,
-    "fps": 1
+    "fps": 1,
+    "autofocus": 0
   },
   "gpio_pins": {
     "pin_Start": 16,
@@ -30,39 +31,34 @@
     "pin_out10": 26
   },
   "image_processing": {
-    "threshold": 226,
+    "threshold": 100,
     "threshold_mode": "adaptive",
     "ada_block": 63,
     "ada_c": -12,
     "white_ratio": 52,
     "affine_h_mm": 163,
     "affine_w_mm": 22,
-    "filter_min_len": 848,
-    "filter_max_len": 1575,
-    "filter_min_area": 5265,
-    "filter_max_area": 9778,
+    "filter_min_len": 2374,
+    "filter_max_len": 4748,
+    "filter_min_area": 86227,
+    "filter_max_area": 215569,
     "roi": [
-      0.1721311475409836,
-      0.17395264116575593,
-      0.9453551912568307,
-      0.9207650273224044
+      0.46311475409836067,
+      0.2941712204007286,
+      0.8920765027322405,
+      0.9626593806921676
     ],
-    "decision_threshold": 0.86,
-    "clahe_clip": 2.8,
-    "brightness": 1.8,
-    "contrast": 1.0,
+    "decision_threshold": 0.54,
+    "clahe_clip": 2.9,
+    "brightness": 0.6,
+    "contrast": 1.15,
     "saturation": 1.0,
     "gamma": 1.0,
-    "blur": 0.0,
+    "blur": 1.1,
     "sharpen": 0.0
   },
   "flags": {
-    "CLAHE_FLAG": true,
     "CONTOURS_FLAG": true,
-    "MASK_SECOND_FLAG": true,
-    "SIO_FLAG": true,
-    "LENGTH_FILTER_FLAG": true,
-    "AREA_FILTER_FLAG": true,
     "SAVE_DEBUG_FLAG": false
   },
   "storage": {
@@ -189,14 +185,7 @@
       "pins": []
     }
   },
-  "car_models": [
-    "J00",
-    "J01",
-    "J02",
-    "default"
-  ],
   "current_spec": {
-    "car_model": "default",
     "specification": "1"
   }
 }

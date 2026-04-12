@@ -249,12 +249,10 @@ class InspectionEngine:
 
         contours, _ = cv2.findContours(binarized, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-        if flags.get("LENGTH_FILTER_FLAG", True):
-            contours = self.filter_length_contours(
-                contours, ip["filter_min_len"], ip["filter_max_len"], adj_sw, adj_sh)
-        if flags.get("AREA_FILTER_FLAG", True):
-            contours = self.filter_area_contours(
-                contours, ip["filter_min_area"], ip["filter_max_area"], adj_sw, adj_sh)
+        contours = self.filter_length_contours(
+            contours, ip["filter_min_len"], ip["filter_max_len"], adj_sw, adj_sh)
+        contours = self.filter_area_contours(
+            contours, ip["filter_min_area"], ip["filter_max_area"], adj_sw, adj_sh)
 
         if not contours:
             return [], None, binarized, None, [], False
@@ -395,16 +393,11 @@ class InspectionEngine:
                 gray, ip, adj_sw, adj_sh, filter_quad=False)
 
             if found and areas:
-                if flags.get("MASK_SECOND_FLAG", True):
-                    matched, *_ = self._mask_second_try(
-                        areas, approx, frame.copy(), ip, template_paths, template_list,
-                        decision_thr, adj_sw, adj_sh)
-                else:
-                    trans_bin, trans_rgb, ok = self.perspective_transform(
-                        areas, card_cnt, frame, binarized, h_px, w_px)
-                    if ok:
-                        matched, *_ = self.template_match(
-                            trans_bin, template_paths, template_list, decision_thr)
+                trans_bin, trans_rgb, ok = self.perspective_transform(
+                    areas, card_cnt, frame, binarized, h_px, w_px)
+                if ok:
+                    matched, *_ = self.template_match(
+                        trans_bin, template_paths, template_list, decision_thr)
 
         if not matched:
             # 輪郭なし or 射影変換スキップ: 直接マッチング
@@ -416,41 +409,6 @@ class InspectionEngine:
             return os.path.basename(matched[0])
         return None
 
-    def _mask_second_try(self, areas, approx, frame, ip, template_paths, template_list,
-                         decision_thr, adj_sw, adj_sh):
-        """マスク領域で再試行"""
-        self.logger.debug("マスク処理後の2回目試行")
-        h_px = int(ip.get("affine_h_mm", 50)) * 10
-        w_px = int(ip.get("affine_w_mm", 40)) * 10
-        base_thr = ip.get("threshold", 30)
-
-        (cx, cy), radius = cv2.minEnclosingCircle(approx)
-        center = (int(cx), int(cy))
-        radius = int(radius * 1.5)
-
-        work = frame.copy()
-        gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-        mask_img = np.zeros_like(gray)
-        cv2.circle(mask_img, center, radius, 255, -1)
-        masked = cv2.bitwise_and(work, work, mask=mask_img)
-        gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
-
-        for scale in range(80, 121, 10):
-            thr_m = base_thr * scale / 100
-            ip_m = dict(ip, threshold=thr_m)
-            areas2, approx2, binarized2, cnt2, _, found2 = self.extract_contours(
-                gray.copy(), ip_m, adj_sw, adj_sh, filter_quad=True, save_debug=False)
-            if found2 and areas2:
-                trans_bin, trans_rgb, ok = self.perspective_transform(
-                    areas2, cnt2, frame, binarized2, h_px, w_px)
-                if ok:
-                    matched, best_r, best_res, max_v = self.template_match(
-                        trans_bin, template_paths, template_list, decision_thr)
-                    if matched:
-                        return matched, best_r, best_res, max_v
-
-        self.logger.info("マスク処理後でも不一致")
-        return [], None, None, 0.0
 
     # ------------------------------------------------------------------
     # カメラユーティリティ
@@ -511,7 +469,10 @@ class InspectionEngine:
         cap.set(cv2.CAP_PROP_SATURATION, cam_cfg.get("saturation", 50))
         cap.set(cv2.CAP_PROP_HUE, cam_cfg.get("hue", 0))
         cap.set(cv2.CAP_PROP_WB_TEMPERATURE, cam_cfg.get("wb_temp", 4000))
-        cap.set(cv2.CAP_PROP_FOCUS, cam_cfg.get("focus", 0))
+        autofocus = cam_cfg.get("autofocus", 1) # Default 1 (オートフォーカスON)
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, autofocus)
+        if hasattr(cv2, "CAP_PROP_FOCUS") and autofocus == 0:
+            cap.set(cv2.CAP_PROP_FOCUS, cam_cfg.get("focus", 0))
         cap.set(cv2.CAP_PROP_ZOOM, cam_cfg.get("zoom", 1))
         cap.set(cv2.CAP_PROP_FPS, cam_cfg.get("fps", 30))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)

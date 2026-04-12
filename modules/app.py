@@ -13,6 +13,7 @@ import os
 import queue
 import platform
 import sys
+from pathlib import Path
 
 import tkinter as tk
 from tkinter import messagebox
@@ -290,6 +291,9 @@ class TMApp:
         sb = tk.Scrollbar(hist_frm, orient=tk.VERTICAL, command=self.lb_history.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.lb_history.configure(yscrollcommand=sb.set)
+        
+        # NG履歴ダブルクリックで画像表示 (inspection_app準拠)
+        self.lb_history.bind("<Double-1>", self._on_history_double_click)
 
         hist_btn_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
         hist_btn_frm.pack(fill=tk.X, padx=10, pady=5)
@@ -346,12 +350,27 @@ class TMApp:
     # ステータス表示
     # ------------------------------------------------------------------
     def _update_status(self, text, bg_color, fg_color=None):
+        """ステータス表示とヘッダー色の更新 (inspection_app準拠)"""
         if fg_color is None:
+            # bg_colorがデフォルトパネル色の場合はアクセントカラー、それ以外(OK/NG)は白か黒
             fg_color = COLOR_ACCENT if bg_color == COLOR_BG_PANEL else (
                 "black" if bg_color in (COLOR_OK, COLOR_ACCENT) else "white")
+        
         self.lbl_status.config(text=text, bg=bg_color, fg=fg_color)
         self.header.config(bg=bg_color)
-        self.lbl_clock.config(bg=bg_color)
+        
+        # ヘッダー内の全ウィジェットの背景を合わせる（ボタン以外）
+        for w in self.header.winfo_children():
+            try:
+                # mode_frmなどのコンテナも含む全ラベル・フレームを同期
+                if not isinstance(w, tk.Button):
+                    w.config(bg=bg_color)
+                    # 子要素（mode_frm内のラベル等）があれば再帰的に or 直接指定
+                    for sub in w.winfo_children():
+                        if not isinstance(sub, tk.Button):
+                            sub.config(bg=bg_color)
+            except Exception:
+                pass
 
     def _update_clock(self):
         now = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")
@@ -391,12 +410,17 @@ class TMApp:
             time.sleep(0.01)  # レスポンス向上のため待ち時間を短縮
 
     def _render_preview(self, frame):
-        """フレームを Canvas に描画 (最適化版)"""
+        """フレームを Canvas に描画 (設定解像度を尊重)"""
         try:
             cam_preview_res = self.cfg.get("camera", "preview_res", default="640x480")
             if cam_preview_res == "プレビューなし":
                 self.is_rendering = False
                 return
+
+            try:
+                sw, sh = map(int, cam_preview_res.split('x'))
+            except Exception:
+                sw, sh = 640, 480
 
             # キャンバスの現在サイズを取得
             cw = self.preview_canvas.winfo_width()
@@ -404,9 +428,13 @@ class TMApp:
             if cw < 2 or ch < 2:
                 cw, ch = 640, 480
 
+            # 設定解像度とキャンバス解像度の小さい方を上限とする
+            tw = min(cw, sw)
+            th = min(ch, sh)
+
             # 元の縦横比を維持してフィットさせる計算
             h_orig, w_orig = frame.shape[:2]
-            scale = min(cw / w_orig, ch / h_orig)
+            scale = min(tw / w_orig, th / h_orig)
             nw = int(w_orig * scale)
             nh = int(h_orig * scale)
 
@@ -414,9 +442,8 @@ class TMApp:
                 self.is_rendering = False
                 return
 
-            # リサイズを OpenCV で1回に集約 (INTER_NEAREST で高速化)
+            # リサイズ (設定解像度に合わせて縮小)
             resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_NEAREST)
-            # 色変換を縮小後に行う (面積が減っているため高速)
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb)
 
@@ -468,7 +495,8 @@ class TMApp:
                 self.root.after(0, lambda: self._update_status("エラー", COLOR_NG))
                 continue
 
-            now = datetime.datetime.now().strftime("%H:%M:%S")
+            now_full = datetime.datetime.now().strftime("%m/%d %H:%M")
+            now_time = datetime.datetime.now().strftime("%H:%M:%S") # ログ保存用
             spec_map = self.cfg.data.get("specification_mapping", {})
             current_spec = self.cfg.get("current_spec", "specification", default="1")
 
@@ -483,6 +511,7 @@ class TMApp:
                         self.v_match_info.set(f"一致: {self.engine.last_matched_file} (スコア: {self.engine.last_score:.2f})") if self.engine.last_matched_file else self.v_match_info.set("")
                     ])
                     self.engine.save_log("OK", result)
+                    self._save_csv_log("OK", result, f"Score: {self.engine.last_score:.2f}")
                     self.engine.save_image(frame, "OK", config_manager=self.cfg)
                     if self.out_ok:
                         self.out_ok.on()
@@ -490,24 +519,30 @@ class TMApp:
                         self.out_ok.off()
                 else:
                     label = f"NG 期待:{current_spec} 検出:{result}"
-                    self._handle_ng(label, frame, now)
+                    self._handle_ng(label, frame, now_full)
             else:
                 label = f"NG (未検出)"
-                self._handle_ng(label, frame, now)
+                self._handle_ng(label, frame, now_full)
 
     def _handle_ng(self, label, frame, time_str):
         """NGの際の処理（UI更新・信号出力・履歴追加）"""
         info_text = f"最高スコア: {self.engine.last_score:.2f}"
-        self.root.after(0, lambda l=label, info=info_text: [
+        # 履歴表示用に文言を短縮 (E:期待, D:検出, Sc:スコア)
+        # "NG " の文字を削除
+        short_label = label.replace("NG ", "").replace(" 期待:", " E:").replace(" 検出:", " D:").replace(" (未検出)", " (-)")
+        lb_text = f"{time_str} {short_label} Sc:{self.engine.last_score:.2f}"
+        
+        self.root.after(0, lambda l=label, info=info_text, lt=lb_text: [
             self._update_status(f"NG  {l}", COLOR_NG),
             self.v_last_result.set(f"✗ {l}"),
             self.lbl_last_result.config(fg=COLOR_NG),
             self.v_match_info.set(info),
-            self.lb_history.insert(0, f"{time_str}  {l} ({info})")
+            self.lb_history.insert(0, lt)
         ])
-        self.ng_history.append({"label": label, "time": time_str})
         self.engine.save_log("NG", label)
-        self.engine.save_image(frame, "NG", config_manager=self.cfg)
+        self._save_csv_log("NG", label, info_text)
+        path = self.engine.save_image(frame, "NG", config_manager=self.cfg)
+        self.ng_history.insert(0, {"label": label, "time": time_str, "img_path": path})
         if self.out_ng:
             self.out_ng.on()
 
@@ -518,6 +553,102 @@ class TMApp:
         if self.out_ng:
             self.out_ng.off()
         self._update_status("検査モード 待機中", COLOR_BG_PANEL)
+
+    def _save_csv_log(self, result_type, detail_primary, detail_secondary):
+        """CSV形式で検査履歴を書き出す"""
+        try:
+            import csv
+            base = self.cfg.get("storage", "results_dir", default="./results")
+            csv_dir = Path(base) / "csv"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            now = datetime.datetime.now()
+            fpath = csv_dir / f"app_{now.strftime('%Y%m%d')}.csv"
+            
+            file_exists = fpath.exists()
+            with open(fpath, "a", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(["Timestamp", "Result", "PrimaryDetail", "SecondaryDetail"])
+                writer.writerow([now.strftime('%Y-%m-%d %H:%M:%S'), result_type, detail_primary, detail_secondary])
+        except Exception as e:
+            self.logger.error(f"CSVログ保存エラー: {e}")
+
+    def _on_history_double_click(self, event):
+        """履歴ダブルクリックで保存されたNG画像をポップアップ表示"""
+        sel = self.lb_history.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx < len(self.ng_history):
+            hist_item = self.ng_history[idx]
+            img_path = hist_item.get("img_path")
+            if img_path and os.path.exists(img_path):
+                self._show_ng_image(img_path, hist_item["time"], hist_item["label"])
+
+    def _show_ng_image(self, path, time_str, label_text):
+        """NG画像のビューワー表示 (inspection_app準拠の縦スクロール形式)"""
+        top = tk.Toplevel(self.root)
+        top.title(f"NG画像確認 - {time_str}")
+        top.configure(bg=COLOR_BG_MAIN)
+        top.transient(self.root)
+        
+        # ウィンドウサイズを画面の85%に設定
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        win_w = int(sw * 0.85)
+        win_h = int(sh * 0.85)
+        top.geometry(f"{win_w}x{win_h}")
+
+        lbl_info = tk.Label(top, text=f"{time_str} / {label_text}", font=FONT_LARGE, bg=COLOR_BG_MAIN, fg=COLOR_NG)
+        lbl_info.pack(pady=10)
+        
+        # Scrollable area
+        frame_outer = tk.Frame(top, bg=COLOR_BG_MAIN)
+        frame_outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        canvas = tk.Canvas(frame_outer, bg=COLOR_BG_MAIN, highlightthickness=0)
+        scrollbar = tk.Scrollbar(frame_outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        inner = tk.Frame(canvas, bg=COLOR_BG_MAIN)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        
+        def _on_inner_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _on_inner_configure)
+
+        # マウスホイールでスクロール
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        top.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        try:
+            pil_img = Image.open(path)
+            # Resize based on window width
+            img_max_w = int(win_w * 0.82)
+            img_max_h = int(sh * 0.65)
+            pil_img.thumbnail((img_max_w, img_max_h), Image.Resampling.LANCZOS)
+            
+            # Filename label
+            fname = os.path.basename(path)
+            tk.Label(inner, text=fname, font=FONT_NORMAL, bg=COLOR_BG_MAIN, fg=COLOR_TEXT_SUB).pack(anchor="w", padx=10, pady=(10, 2))
+            
+            tk_img = ImageTk.PhotoImage(pil_img)
+            lbl_img = tk.Label(inner, image=tk_img, bg=COLOR_BG_MAIN)
+            lbl_img.image = tk_img # prevent GC
+            lbl_img.pack(padx=10, pady=(0, 5))
+        except Exception as e:
+            tk.Label(inner, text=f"画像読み込みエラー:\n{e}", bg=COLOR_BG_MAIN, fg=COLOR_NG).pack()
+
+        # 閉じるボタン
+        tk.Button(top, text="閉じる", font=FONT_BOLD, bg="#546E7A", fg="white",
+                  relief="flat", padx=20,
+                  command=top.destroy).pack(pady=10)
 
     def _clear_history(self):
         if messagebox.askyesno("確認", "NG履歴を削除しますか？", parent=self.root):
@@ -557,19 +688,22 @@ class TMApp:
         self._setup_hardware()
 
     def _show_help(self):
+        """操作ヘルプを表示 (最新機能に合わせ刷新)"""
         HelpWindow(self.root, "操作ヘルプ", {
             "検査の基本フロー": (
                 "本システムは「トリガー待機 → 撮影 → 解析 → 判定出力」のサイクルで動作します。\n\n"
                 "1. 起動すると自動的に「検査モード」で待機状態になります。\n"
                 "2. 外部信号(GPIO)が入ると、現在の映像をキャプチャし判定を開始します。\n"
-                "3. マッチングに成功するとOK、失敗するとNGとして信号を出力し、画像を保存します。"
+                "3. 指定したマスター画像とマッチングを行い、設定された閾値を上回ればOK、下回ればNGとなります。\n"
+                "4. 判定完了後、OK/NG信号を一定時間出力し、画像を自動保存します。"
             ),
-            "判定結果の確認": (
-                "結果は画面中央の大きな文字と、右パネルの「最終判定」欄に表示されます。\n\n"
-                "・一致: [ファイル名] (スコア: 0.xx)\n"
-                "  どのマスター画像と、どれくらいの確信度(1.0に近いほど高精度)で一致したかを示します。\n"
-                "  スコアが低い場合は照明やピントの不備が考えられます。\n"
-                "・NG(未検出): どのマスターとも一致しなかった場合に表示されます。"
+            "判定結果と履歴の確認": (
+                "検査結果は画面中央の大きな文字と、右パネルの「最終判定」欄に表示されます。\n\n"
+                "・一致: [仕様名/ファイル名] (スコア: 0.xx)\n"
+                "  どれくらいの確信度(1.0に近いほど高精度)で一致したかを示します。\n"
+                "・NG(未検出): どのマスターとも一致しなかった場合に表示されます。\n"
+                "・NG履歴: 最近のNG発生日時がリスト表示されます。\n"
+                "  ★履歴を【ダブルクリック】することで、保存された画像を拡大表示できます。"
             ),
             "編集モード (マスター登録)": (
                 "新しい仕様を追加したり、既存の画像を調整したりするためのモードです。\n\n"
@@ -577,10 +711,13 @@ class TMApp:
                 "ステップ②: [点・範囲の選択] でワーク部位を囲み、[射影変換] で歪みを補正します。必要に応じて [輪郭採用] を使うと自動で矩形を抽出できます。\n"
                 "ステップ③: [マスター登録] を押すと、現在の画像を検査用マスターとして保存します。"
             ),
+            "便利な機能と設定": (
+                "・CSVログ: 検査結果は `results/csv/` に日別で自動記録されます。\n"
+                "・オートフォーカス: 設定画面でONにすると、カメラ側で自動的に焦点を合わせます。\n"
+                "・容量監視: 保存フォルダの容量が上限を超えると、古い画像から自動削除されます。"
+            ),
             "異常時の対応": (
-                "NG（不一致）が発生すると、ブザー等(out_NGlog)が鳴り続けます。\n\n"
-                "内容を確認し、問題なければ右パネル下部の「ブザー停止」ボタンで解除してください。\n"
-                "過去のNG履歴は「履歴リセット」で消去可能です。"
+                "NGが発生すると、ブザー信号(NG出力)が鳴り続けます。内容を確認し、問題なければ右パネル下部の「ブザー停止」ボタンで解除してください。"
             )
         })
 
@@ -588,55 +725,80 @@ class TMApp:
     # 容量監視
     # ------------------------------------------------------------------
     def _monitor_storage(self):
+        """保存フォルダの容量を確認し、上限を超えた場合は古い画像から削除する（10分おき・非同期）"""
         _INTERVAL = 10 * 60 * 1000
-        try:
-            stor = self.cfg.data.get("storage", {})
-            if not stor.get("auto_delete_enabled", False):
-                self.root.after(_INTERVAL, self._monitor_storage)
-                return
-            max_gb = float(stor.get("max_results_gb", 0))
-            if max_gb <= 0:
-                self.root.after(_INTERVAL, self._monitor_storage)
-                return
-            import shutil
-            from pathlib import Path
-            res_dir = Path(stor.get("results_dir", "./results"))
-            img_dir = res_dir / "images"
-            if not img_dir.exists():
-                self.root.after(_INTERVAL, self._monitor_storage)
-                return
-            files = sorted(
-                [f for f in img_dir.rglob("*")
-                 if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png")],
-                key=lambda f: f.stat().st_mtime
-            )
-            total = sum(f.stat().st_size for f in files)
-            max_bytes = max_gb * 1024 ** 3
-            if total > max_bytes:
-                target = max_bytes * 0.9
-                for f in files:
-                    if total <= target:
-                        break
-                    sz = f.stat().st_size
-                    f.unlink()
-                    total -= sz
-                    self.logger.info(f"[容量監視] 削除(画像): {f.name}")
+        
+        def _thread_task():
+            try:
+                stor = self.cfg.data.get("storage", {})
+                if not stor.get("auto_delete_enabled", False):
+                    return
+                max_gb = float(stor.get("max_results_gb", 0))
+                if max_gb <= 0:
+                    return
+                
+                import shutil
+                res_dir = Path(stor.get("results_dir", "./results"))
+                img_dir = res_dir / "images"
+                debug_dir = res_dir / "debug"
+                
+                files = []
+                if img_dir.exists():
+                    files.extend([f for f in img_dir.rglob("*")
+                                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png")])
+                if debug_dir.exists():
+                    files.extend([f for f in debug_dir.rglob("*")
+                                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png")])
+                
+                if not files:
+                    return
 
-            # ログファイルの監視（30日以上経過したものを削除）
-            log_dir = res_dir / "logs"
-            if log_dir.exists():
-                now_ts = time.time()
-                for log_f in log_dir.glob("*.log"):
-                    if log_f.is_file():
-                        # 30 days = 30 * 24 * 3600 seconds = 2592000
-                        if now_ts - log_f.stat().st_mtime > 2592000:
-                            log_f.unlink()
-                            self.logger.info(f"[容量監視] 削除(旧ログ): {log_f.name}")
+                files.sort(key=lambda f: f.stat().st_mtime)
+                total = sum(f.stat().st_size for f in files)
+                max_bytes = max_gb * 1024 ** 3
+                
+                # フェイルセーフ：ディスク容量自体が1GB未満の場合は強制削減
+                try:
+                    usage = shutil.disk_usage(res_dir)
+                    free_gb = usage.free / (1024 ** 3)
+                    if free_gb < 1.0:
+                        max_bytes = min(max_bytes, total - (1.0 * 1024 ** 3))
+                        if max_bytes < 0: max_bytes = 0
+                except Exception:
+                    pass
 
-        except Exception as e:
-            self.logger.error(f"[容量監視] エラー: {e}")
-        finally:
-            self.root.after(_INTERVAL, self._monitor_storage)
+                if total > max_bytes:
+                    target = max_bytes * 0.9
+                    for f in files:
+                        if total <= target:
+                            break
+                        try:
+                            sz = f.stat().st_size
+                            f.unlink()
+                            total -= sz
+                            self.logger.info(f"[容量監視] 削除(画像): {f.name}")
+                        except Exception as e:
+                            self.logger.warning(f"[容量監視] 削除失敗: {f.name} - {e}")
+
+                # ログファイルの監視（30日以上経過したものを削除）
+                log_dir = res_dir / "logs"
+                if log_dir.exists():
+                    now_ts = time.time()
+                    for log_f in log_dir.glob("*.log"):
+                        if log_f.is_file():
+                            if now_ts - log_f.stat().st_mtime > 2592000:
+                                try:
+                                    log_f.unlink()
+                                    self.logger.info(f"[容量監視] 削除(旧ログ): {log_f.name}")
+                                except Exception: pass
+
+            except Exception as e:
+                self.logger.error(f"[容量監視] エラー: {e}")
+            finally:
+                if self.running:
+                    self.root.after(_INTERVAL, self._monitor_storage)
+                    
+        threading.Thread(target=_thread_task, daemon=True).start()
 
     # ------------------------------------------------------------------
     # 仮想GPIOパネル（Windows デバッグ用）

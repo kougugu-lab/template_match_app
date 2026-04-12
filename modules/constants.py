@@ -66,6 +66,7 @@ COLOR_BORDER = "#505050"
 # --- CV2 カメラプロパティ マッピング ---
 CAM_PROP_MAP = {
     "fps": cv2.CAP_PROP_FPS, "focus": cv2.CAP_PROP_FOCUS,
+    "autofocus": cv2.CAP_PROP_AUTOFOCUS,
     "gain": cv2.CAP_PROP_GAIN, "exposure": cv2.CAP_PROP_EXPOSURE,
     "brightness": cv2.CAP_PROP_BRIGHTNESS, "contrast": cv2.CAP_PROP_CONTRAST,
     "saturation": cv2.CAP_PROP_SATURATION, "hue": cv2.CAP_PROP_HUE,
