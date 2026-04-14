@@ -402,9 +402,9 @@ class TMApp:
     def _schedule_status_reset_if_needed(self):
         """設定に応じて結果表示を一定時間後に待機状態へ戻す"""
         try:
-            sec = float(self.cfg.get("inference", "result_display_time", default=0.0))
+            sec = float(self.cfg.get("inference", "result_display_time", default=5.0))
         except Exception:
-            sec = 0.0
+            sec = 5.0
         if sec <= 0:
             return
         if self._status_reset_after_id is not None:
@@ -453,11 +453,11 @@ class TMApp:
             except Exception as e:
                 self.logger.error(f"Preview error: {e}")
             try:
-                fps = float(self.cfg.get("inference", "preview_fps", default=15.0))
+                fps = float(self.cfg.get("inference", "preview_fps", default=2.0))
                 fps = max(1.0, min(60.0, fps))
                 interval = 1.0 / fps
             except Exception:
-                interval = 1.0 / 15.0
+                interval = 1.0 / 2.0
             time.sleep(interval)
 
     def _render_preview(self, frame):
@@ -657,10 +657,14 @@ class TMApp:
         self._schedule_status_reset_if_needed()
         if self.out_ng:
             self.out_ng.on()
-            try:
-                ng_t = float(self.cfg.get("inference", "ng_output_time", default=0.0))
-            except Exception:
+            ng_raw = self.cfg.get("inference", "ng_output_time", default="")
+            if ng_raw in ("", None):
                 ng_t = 0.0
+            else:
+                try:
+                    ng_t = float(ng_raw)
+                except Exception:
+                    ng_t = 0.0
             if ng_t > 0:
                 threading.Thread(target=self._auto_off_ng_output, args=(ng_t,), daemon=True).start()
 

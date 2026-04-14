@@ -9,23 +9,10 @@ import json
 import os
 import copy
 import logging
-import datetime
-import sys
 from pathlib import Path
 from .constants import VALID_BCM_PINS, RES_OPTIONS_RAW, RES_OPTIONS_PREVIEW
 
 SETTINGS_FILE = "config.json"
-
-OPERATION_PRESETS = {
-    "fast": {"camera_fps": 12, "preview_fps": 16.0, "ok_output_time": 0.1, "ng_output_time": 0.0, "result_display_time": 1.0},
-    "standard": {"camera_fps": 10, "preview_fps": 12.0, "ok_output_time": 0.2, "ng_output_time": 0.0, "result_display_time": 1.5},
-    "accurate": {"camera_fps": 8, "preview_fps": 10.0, "ok_output_time": 0.25, "ng_output_time": 0.0, "result_display_time": 2.0},
-}
-
-ENVIRONMENT_PRESETS = {
-    "windows_dev": {"preview_fps_max": 12.0, "camera_fps_max": 10},
-    "raspi_prod": {"preview_fps_max": 20.0, "camera_fps_max": 20},
-}
 
 DEFAULT_CONFIG = {
     "camera": {
@@ -65,19 +52,12 @@ DEFAULT_CONFIG = {
         "max_results_gb": 30, "auto_delete_enabled": False
     },
     "inference": {
-        "preview_fps": 12.0,
+        "preview_fps": 2.0,
         "ok_output_time": 0.2,
-        "ng_output_time": 0.0,
-        "result_display_time": 1.5,
-        "max_retries": 0,
-        "burst_interval": 0.2
-    },
-    "runtime": {
-        "operation_preset": "standard",
-        "environment_profile": "auto",
-        "auto_apply_environment": True,
-        "compat_cleanup_enabled": False,
-        "legacy_key_cleanup_after": "2026-07-01"
+        "ng_output_time": "",
+        "result_display_time": 5.0,
+        "max_retries": 10,
+        "burst_interval": 0.0
     },
     "augment": {
         "master_dir": "./master_image/source",
@@ -225,54 +205,33 @@ class ConfigManager:
         # inference
         inf = data.setdefault("inference", {})
         try:
-            inf["preview_fps"] = max(1.0, float(inf.get("preview_fps", 12.0)))
+            inf["preview_fps"] = max(1.0, float(inf.get("preview_fps", 2.0)))
         except Exception:
-            inf["preview_fps"] = 12.0
+            inf["preview_fps"] = 2.0
         try:
             inf["ok_output_time"] = max(0.0, float(inf.get("ok_output_time", 0.2)))
         except Exception:
             inf["ok_output_time"] = 0.2
+        ng_raw = inf.get("ng_output_time", "")
+        if ng_raw in ("", None):
+            inf["ng_output_time"] = ""
+        else:
+            try:
+                inf["ng_output_time"] = max(0.0, float(ng_raw))
+            except Exception:
+                inf["ng_output_time"] = ""
         try:
-            inf["ng_output_time"] = max(0.0, float(inf.get("ng_output_time", 0.0)))
+            inf["result_display_time"] = max(0.0, float(inf.get("result_display_time", 5.0)))
         except Exception:
-            inf["ng_output_time"] = 0.0
+            inf["result_display_time"] = 5.0
         try:
-            inf["result_display_time"] = max(0.0, float(inf.get("result_display_time", 1.5)))
+            inf["max_retries"] = max(0, int(inf.get("max_retries", 10)))
         except Exception:
-            inf["result_display_time"] = 1.5
+            inf["max_retries"] = 10
         try:
-            inf["max_retries"] = max(0, int(inf.get("max_retries", 0)))
+            inf["burst_interval"] = max(0.0, float(inf.get("burst_interval", 0.0)))
         except Exception:
-            inf["max_retries"] = 0
-        try:
-            inf["burst_interval"] = max(0.0, float(inf.get("burst_interval", 0.2)))
-        except Exception:
-            inf["burst_interval"] = 0.2
-
-        # runtime
-        rt = data.setdefault("runtime", {})
-        op = str(rt.get("operation_preset", "standard"))
-        if op not in OPERATION_PRESETS:
-            op = "standard"
-        rt["operation_preset"] = op
-
-        env = str(rt.get("environment_profile", "auto"))
-        if env not in {"auto", "windows_dev", "raspi_prod"}:
-            env = "auto"
-        rt["environment_profile"] = env
-        rt["auto_apply_environment"] = bool(rt.get("auto_apply_environment", True))
-        rt["compat_cleanup_enabled"] = bool(rt.get("compat_cleanup_enabled", False))
-        rt["legacy_key_cleanup_after"] = str(rt.get("legacy_key_cleanup_after", "2026-07-01"))
-
-        # 実行環境プロファイルの自動適用（上限制御）
-        resolved_env = env
-        if env == "auto":
-            resolved_env = "windows_dev" if sys.platform == "win32" else "raspi_prod"
-        rt["resolved_environment"] = resolved_env
-        if rt["auto_apply_environment"] and resolved_env in ENVIRONMENT_PRESETS:
-            e = ENVIRONMENT_PRESETS[resolved_env]
-            inf["preview_fps"] = min(float(inf.get("preview_fps", 12.0)), float(e["preview_fps_max"]))
-            cam["fps"] = min(int(cam.get("fps", 10)), int(e["camera_fps_max"]))
+            inf["burst_interval"] = 0.0
 
         # storage
         st = data.setdefault("storage", {})
@@ -291,22 +250,9 @@ class ConfigManager:
             st["max_results_gb"] = 30
         st["auto_delete_enabled"] = bool(st.get("auto_delete_enabled", False))
 
-        # 旧キーの段階的クリーンアップ（明示有効時のみ）
-        cleanup_due = False
-        if rt["compat_cleanup_enabled"]:
-            try:
-                border = datetime.date.fromisoformat(rt["legacy_key_cleanup_after"])
-                if datetime.date.today() >= border:
-                    cleanup_due = True
-            except Exception:
-                pass
-        if cleanup_due:
-            st.pop("res_ok", None)
-            st.pop("res_ng", None)
-        else:
-            # 互換期間中は旧キーへ同期
-            st["res_ok"] = st["res_skip"]
-            st["res_ng"] = st["res_record"]
+        # 旧キーへ同期（互換維持）
+        st["res_ok"] = st["res_skip"]
+        st["res_ng"] = st["res_record"]
 
         return data
 
@@ -324,16 +270,8 @@ class ConfigManager:
         return self._normalize_settings(self._clean_legacy_keys(copy.deepcopy(DEFAULT_CONFIG)))
 
     def save(self):
-        """設定ファイルに保存（上書き前にバックアップ作成）"""
+        """設定ファイルに保存"""
         try:
-            import shutil
-            if os.path.exists(self.path):
-                bak_path = self.path + ".bak"
-                try:
-                    shutil.copy2(self.path, bak_path)
-                except Exception as e:
-                    self.logger.warning(f"バックアップ作成に失敗しました: {e}")
-
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2, ensure_ascii=False)
             return True

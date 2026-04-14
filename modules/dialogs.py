@@ -8,7 +8,6 @@ dialogs.py - 設定ダイアログ (SettingsDialog)
 import cv2
 import threading
 import time
-import datetime
 import platform
 import os
 import sys
@@ -31,7 +30,6 @@ from .constants import (
 )
 from .widgets import create_card, Tooltip, HelpWindow
 from .hardware import OutputDevice, DigitalInputDevice
-from .settings import OPERATION_PRESETS
 
 
 
@@ -186,17 +184,13 @@ class SettingsDialog(tk.Toplevel):
         self.v_contours_flag = tk.BooleanVar()
         self.v_preview_fps = tk.DoubleVar()
         self.v_ok_output_time = tk.DoubleVar()
-        self.v_ng_output_time = tk.DoubleVar()
+        self.v_ng_output_time = tk.StringVar()
         self.v_result_display_time = tk.DoubleVar()
         self.v_max_retries = tk.IntVar()
         self.v_burst_interval = tk.DoubleVar()
-        self.v_operation_preset = tk.StringVar()
-        self.v_environment_profile = tk.StringVar()
-        self.v_auto_apply_environment = tk.BooleanVar()
-        self.v_compat_cleanup_enabled = tk.BooleanVar()
-        self._loaded_operation_preset = "standard"
         self._cb_res_ok = None
         self._cb_res_ng = None
+        self._validation_targets = {}
 
         self.title("詳細設定")
         self.geometry("1400x900")
@@ -1148,30 +1142,6 @@ class SettingsDialog(tk.Toplevel):
         cb.pack(anchor="w", pady=5)
         Tooltip(cb, "検査の度に中間処理画像（二値化、等高線など）が保存されます。※動作が重くなります")
 
-        c0, i0 = create_card(sc, "運転プリセット・環境")
-        c0.pack(fill=tk.X, pady=(0, 10))
-
-        cb_pr = self._combobox_row(i0, "運転プリセット:", self.v_operation_preset, ["standard", "accurate", "fast"])
-        Tooltip(cb_pr, "標準/高精度/高速から推奨値セットを選択します。")
-        cb_env = self._combobox_row(i0, "環境プロファイル:", self.v_environment_profile, ["auto", "windows_dev", "raspi_prod"])
-        Tooltip(cb_env, "autoは実行環境に応じて自動選択されます。")
-
-        cb_auto = tk.Checkbutton(i0, text="環境プロファイルを自動適用する", variable=self.v_auto_apply_environment, font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN, selectcolor=COLOR_BG_INPUT, command=self._mark_changed)
-        cb_auto.pack(anchor="w", pady=4)
-        Tooltip(cb_auto, "有効時は環境に応じたFPS上限を自動で適用します。")
-
-        cb_cc = tk.Checkbutton(i0, text="旧互換キーを段階削除する（期限到達後）", variable=self.v_compat_cleanup_enabled, font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN, selectcolor=COLOR_BG_INPUT, command=self._mark_changed)
-        cb_cc.pack(anchor="w", pady=(0, 6))
-        Tooltip(cb_cc, "storage.res_ok/res_ng の旧キー削除を有効化します。")
-
-        btn_apply_preset = tk.Button(
-            i0, text="推奨値を適用", width=12, font=FONT_SET_VAL,
-            bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat",
-            command=self._apply_runtime_preset_ui
-        )
-        btn_apply_preset.pack(anchor="w", pady=(0, 8))
-        Tooltip(btn_apply_preset, "選択中の運転プリセット値を下の各項目へ反映します。")
-
         c0a, i0a = create_card(sc, "AI判定・表示")
         c0a.pack(fill=tk.X, pady=(0, 10))
 
@@ -1180,13 +1150,22 @@ class SettingsDialog(tk.Toplevel):
         sp_pf = self._spinbox(f_pf, self.v_preview_fps, from_=1, to=60, increment=1)
         sp_pf.pack(side=tk.LEFT, padx=5)
         tk.Label(f_pf, text="fps", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        self._validation_targets["preview_fps"] = sp_pf
         Tooltip(sp_pf, "メイン画面のプレビュー更新速度です。")
+
+        f_thr = tk.Frame(i0a, bg=COLOR_BG_PANEL); f_thr.pack(fill=tk.X, pady=4)
+        tk.Label(f_thr, text="判定しきい値:", font=FONT_SET_LBL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=22, anchor="w").pack(side=tk.LEFT)
+        sp_thr = self._spinbox(f_thr, self.v_dec_thr, from_=0.1, to=1.0, increment=0.01)
+        sp_thr.pack(side=tk.LEFT, padx=5)
+        self._validation_targets["decision_threshold"] = sp_thr
+        Tooltip(sp_thr, "テンプレートマッチングの合否しきい値です。")
 
         f_rdt = tk.Frame(i0a, bg=COLOR_BG_PANEL); f_rdt.pack(fill=tk.X, pady=4)
         tk.Label(f_rdt, text="結果表示時間:", font=FONT_SET_LBL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=22, anchor="w").pack(side=tk.LEFT)
         sp_rdt = self._spinbox(f_rdt, self.v_result_display_time, from_=0, to=30, increment=0.1)
         sp_rdt.pack(side=tk.LEFT, padx=5)
         tk.Label(f_rdt, text="sec", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        self._validation_targets["result_display_time"] = sp_rdt
         Tooltip(sp_rdt, "0秒の場合は現在仕様どおり表示を維持します。")
 
         f_retry = tk.Frame(i0a, bg=COLOR_BG_PANEL); f_retry.pack(fill=tk.X, pady=4)
@@ -1194,6 +1173,7 @@ class SettingsDialog(tk.Toplevel):
         sp_retry = self._spinbox(f_retry, self.v_max_retries, from_=0, to=10, increment=1)
         sp_retry.pack(side=tk.LEFT, padx=5)
         tk.Label(f_retry, text="回", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        self._validation_targets["max_retries"] = sp_retry
         Tooltip(sp_retry, "未検出時に追加撮影する回数です。0で再撮影なし。")
 
         f_burst = tk.Frame(i0a, bg=COLOR_BG_PANEL); f_burst.pack(fill=tk.X, pady=4)
@@ -1201,6 +1181,7 @@ class SettingsDialog(tk.Toplevel):
         sp_burst = self._spinbox(f_burst, self.v_burst_interval, from_=0, to=5, increment=0.1)
         sp_burst.pack(side=tk.LEFT, padx=5)
         tk.Label(f_burst, text="sec", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        self._validation_targets["burst_interval"] = sp_burst
         Tooltip(sp_burst, "連続リトライ時の待機時間です。")
 
         c0b, i0b = create_card(sc, "出力制御")
@@ -1211,6 +1192,7 @@ class SettingsDialog(tk.Toplevel):
         sp_okt = self._spinbox(f_okt, self.v_ok_output_time, from_=0, to=10, increment=0.1)
         sp_okt.pack(side=tk.LEFT, padx=5)
         tk.Label(f_okt, text="sec", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
+        self._validation_targets["ok_output_time"] = sp_okt
         Tooltip(sp_okt, "OK出力を保持する時間です。")
 
         f_ngt = tk.Frame(i0b, bg=COLOR_BG_PANEL); f_ngt.pack(fill=tk.X, pady=4)
@@ -1218,7 +1200,8 @@ class SettingsDialog(tk.Toplevel):
         sp_ngt = self._spinbox(f_ngt, self.v_ng_output_time, from_=0, to=30, increment=0.1)
         sp_ngt.pack(side=tk.LEFT, padx=5)
         tk.Label(f_ngt, text="sec", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT)
-        Tooltip(sp_ngt, "0秒の場合はブザー停止まで保持します。")
+        self._validation_targets["ng_output_time"] = sp_ngt
+        Tooltip(sp_ngt, "空欄の場合はブザー停止まで保持します。")
 
         c2, i2 = create_card(sc, "ファイル出力パス設定")
         c2.pack(fill=tk.X, pady=10)
@@ -1296,19 +1279,13 @@ class SettingsDialog(tk.Toplevel):
         self.v_save_debug.set(flags.get("SAVE_DEBUG_FLAG", False))
 
         inf = d.get("inference", {})
-        self.v_preview_fps.set(inf.get("preview_fps", 12.0))
+        self.v_preview_fps.set(inf.get("preview_fps", 2.0))
         self.v_ok_output_time.set(inf.get("ok_output_time", 0.2))
-        self.v_ng_output_time.set(inf.get("ng_output_time", 0.0))
-        self.v_result_display_time.set(inf.get("result_display_time", 1.5))
-        self.v_max_retries.set(inf.get("max_retries", 0))
-        self.v_burst_interval.set(inf.get("burst_interval", 0.2))
-
-        rt = d.get("runtime", {})
-        self.v_operation_preset.set(rt.get("operation_preset", "standard"))
-        self._loaded_operation_preset = self.v_operation_preset.get()
-        self.v_environment_profile.set(rt.get("environment_profile", "auto"))
-        self.v_auto_apply_environment.set(rt.get("auto_apply_environment", True))
-        self.v_compat_cleanup_enabled.set(rt.get("compat_cleanup_enabled", False))
+        ng_val = inf.get("ng_output_time", "")
+        self.v_ng_output_time.set("" if ng_val in ("", None) else str(ng_val))
+        self.v_result_display_time.set(inf.get("result_display_time", 5.0))
+        self.v_max_retries.set(inf.get("max_retries", 10))
+        self.v_burst_interval.set(inf.get("burst_interval", 0.0))
         
         self._changed = False
         self.btn_save.config(bg=COLOR_BG_INPUT, fg="white", text="保存して閉じる")
@@ -1368,65 +1345,31 @@ class SettingsDialog(tk.Toplevel):
             "CONTOURS_FLAG": self.v_contours_flag.get(),
             "SAVE_DEBUG_FLAG": self.v_save_debug.get()
         })
+        ng_raw = str(self.v_ng_output_time.get()).strip()
         d.setdefault("inference", {}).update({
-            "preview_fps": _safe_float(self.v_preview_fps.get(), d.get("inference", {}).get("preview_fps", 12.0)),
+            "preview_fps": _safe_float(self.v_preview_fps.get(), d.get("inference", {}).get("preview_fps", 2.0)),
             "ok_output_time": _safe_float(self.v_ok_output_time.get(), d.get("inference", {}).get("ok_output_time", 0.2)),
-            "ng_output_time": _safe_float(self.v_ng_output_time.get(), d.get("inference", {}).get("ng_output_time", 0.0)),
-            "result_display_time": _safe_float(self.v_result_display_time.get(), d.get("inference", {}).get("result_display_time", 1.5)),
-            "max_retries": int(_safe_float(self.v_max_retries.get(), d.get("inference", {}).get("max_retries", 0))),
-            "burst_interval": _safe_float(self.v_burst_interval.get(), d.get("inference", {}).get("burst_interval", 0.2))
+            "ng_output_time": "" if ng_raw == "" else _safe_float(ng_raw, d.get("inference", {}).get("ng_output_time", 0.0)),
+            "result_display_time": _safe_float(self.v_result_display_time.get(), d.get("inference", {}).get("result_display_time", 5.0)),
+            "max_retries": int(_safe_float(self.v_max_retries.get(), d.get("inference", {}).get("max_retries", 10))),
+            "burst_interval": _safe_float(self.v_burst_interval.get(), d.get("inference", {}).get("burst_interval", 0.0))
         })
-        d.setdefault("runtime", {}).update({
-            "operation_preset": self.v_operation_preset.get(),
-            "environment_profile": self.v_environment_profile.get(),
-            "auto_apply_environment": bool(self.v_auto_apply_environment.get()),
-            "compat_cleanup_enabled": bool(self.v_compat_cleanup_enabled.get())
-        })
-
-        # プリセット変更時のみ推奨値を反映（手動調整は維持）
-        preset = self.v_operation_preset.get().strip()
-        if preset != self._loaded_operation_preset:
-            p = OPERATION_PRESETS.get(preset)
-            if p:
-                d.setdefault("camera", {})["fps"] = int(p["camera_fps"])
-                inf = d.setdefault("inference", {})
-                inf["preview_fps"] = float(p["preview_fps"])
-                inf["ok_output_time"] = float(p["ok_output_time"])
-                inf["ng_output_time"] = float(p.get("ng_output_time", 0.0))
-                inf["result_display_time"] = float(p["result_display_time"])
-
-        # 互換キー保存の可否（削除期限到達時は旧キーを書かない）
-        rt = d.get("runtime", {})
-        cleanup_due = False
-        if rt.get("compat_cleanup_enabled", False):
-            try:
-                border = datetime.date.fromisoformat(str(rt.get("legacy_key_cleanup_after", "2026-07-01")))
-                cleanup_due = datetime.date.today() >= border
-            except Exception:
-                cleanup_due = False
-        if cleanup_due:
-            storage.pop("res_ok", None)
-            storage.pop("res_ng", None)
-        else:
-            storage["res_ok"] = storage["res_skip"]
-            storage["res_ng"] = storage["res_record"]
+        storage["res_ok"] = storage["res_skip"]
+        storage["res_ng"] = storage["res_record"]
         
         # 実体に反映
         self.cfg.data = json.loads(json.dumps(d))
 
-    def _apply_runtime_preset_ui(self):
-        """選択中の運転プリセットをUI値へ反映"""
-        preset = self.v_operation_preset.get().strip()
-        p = OPERATION_PRESETS.get(preset)
-        if not p:
+    def _highlight_validation_error(self, key):
+        w = self._validation_targets.get(key)
+        if not w:
             return
-        self.v_preview_fps.set(float(p["preview_fps"]))
-        self.v_ok_output_time.set(float(p["ok_output_time"]))
-        self.v_ng_output_time.set(float(p.get("ng_output_time", 0.0)))
-        self.v_result_display_time.set(float(p["result_display_time"]))
-        if "fps" in self.cam_props:
-            self.cam_props["fps"].set(str(int(p["camera_fps"])))
-        self._mark_changed()
+        try:
+            w.configure(highlightthickness=2, highlightbackground=COLOR_NG, highlightcolor=COLOR_NG)
+            w.focus_set()
+            w.after(2000, lambda ww=w: ww.configure(highlightthickness=0))
+        except Exception:
+            pass
 
     def _on_save(self):
         # バリデーション
@@ -1481,6 +1424,46 @@ class SettingsDialog(tk.Toplevel):
         outs = g.get("outputs", {})
         if not _check_pin(outs.get("ok", 0), "OK出力"): return
         if not _check_pin(outs.get("ng", 0), "NG出力"): return
+        # システム設定の見える化バリデーション
+        try:
+            thr = float(self.v_dec_thr.get())
+            if thr < 0.1 or thr > 1.0:
+                self._highlight_validation_error("decision_threshold")
+                messagebox.showerror("不備", "判定しきい値は 0.1 ～ 1.0 の範囲で指定してください。")
+                return
+        except Exception:
+            self._highlight_validation_error("decision_threshold")
+            messagebox.showerror("不備", "判定しきい値の入力が不正です。")
+            return
+        for key, var, lo, hi, label in (
+            ("preview_fps", self.v_preview_fps, 1, 60, "プレビュー更新FPS"),
+            ("result_display_time", self.v_result_display_time, 0, 30, "結果表示時間"),
+            ("ok_output_time", self.v_ok_output_time, 0, 10, "OK出力時間"),
+            ("max_retries", self.v_max_retries, 0, 10, "最大リトライ回数"),
+            ("burst_interval", self.v_burst_interval, 0, 5, "リトライ間隔"),
+        ):
+            try:
+                val = float(var.get())
+                if val < lo or val > hi:
+                    self._highlight_validation_error(key)
+                    messagebox.showerror("不備", f"{label} は {lo} ～ {hi} の範囲で指定してください。")
+                    return
+            except Exception:
+                self._highlight_validation_error(key)
+                messagebox.showerror("不備", f"{label} の入力が不正です。")
+                return
+        ng_s = str(self.v_ng_output_time.get()).strip()
+        if ng_s:
+            try:
+                ng_val = float(ng_s)
+                if ng_val < 0 or ng_val > 30:
+                    self._highlight_validation_error("ng_output_time")
+                    messagebox.showerror("不備", "NG出力時間は 0 ～ 30 の範囲で指定してください（空欄可）。")
+                    return
+            except Exception:
+                self._highlight_validation_error("ng_output_time")
+                messagebox.showerror("不備", "NG出力時間の入力が不正です（空欄可）。")
+                return
         if not self._validate_storage_settings():
             return
 
