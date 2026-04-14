@@ -186,6 +186,8 @@ class InspectionEngine:
 
         hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
         total_pixels = gray.size
+        if total_pixels == 0:
+            return 30, 0.0
         target_min = int(total_pixels * (white_ratio / 100.0))
         target_max = int(total_pixels * ((white_ratio + 1.0) / 100.0))
 
@@ -295,12 +297,12 @@ class InspectionEngine:
         flags = self.cfg.data.get("flags", {})
         do_save = flags.get("SAVE_DEBUG_FLAG", False)
 
-        if not areas:
+        if not areas or len(areas[0]) < 4:
             if do_save:
                 cv_imwrite(self._path("debug/affine/NG", "_noarea"), frame)
             return None, None, False
         src = np.float32(areas[0])
-        if src.shape != (4, 1, 2):
+        if src.shape[0] != 4:
             if do_save:
                 cv_imwrite(self._path("debug/affine/NG", "_badshape"), frame)
             return None, None, False
@@ -406,7 +408,8 @@ class InspectionEngine:
                 binarized, template_paths, template_list, decision_thr)
 
         if matched:
-            return os.path.basename(matched[0])
+            # マッチした画像の親フォルダ名（＝パターン名）を返す
+            return os.path.basename(os.path.dirname(matched[0]))
         return None
 
 
@@ -414,68 +417,71 @@ class InspectionEngine:
     # カメラユーティリティ
     # ------------------------------------------------------------------
     @staticmethod
-    def open_camera(config_manager):
-        """設定に従いカメラを開く"""
-        cam_cfg = config_manager.data.get("camera", {})
-        idx = cam_cfg.get("index", 0)
+    def open_camera(index, cam_cfg):
+        """設定に従いカメラを開く (inspection_app 準拠)"""
         res = cam_cfg.get("resolution", "1920x1080")
         try:
             w, h = map(int, res.split("x"))
         except Exception:
             w, h = 1920, 1080
 
-        if platform.system() == "Windows":
-            # 1. MSMF (Windows 10/11で最も安定)
-            try:
-                cap = cv2.VideoCapture(idx, cv2.CAP_MSMF)
-            except Exception:
-                cap = cv2.VideoCapture()
+        cap = None
+        backend = cv2.CAP_V4L2 if platform.system() != "Windows" else cv2.CAP_ANY
+        try:
+            cap = cv2.VideoCapture(index, backend)
+        except Exception:
+            cap = cv2.VideoCapture(index)
 
-            # 2. DSHOW (MSMFがダメな場合や、詳細設定が必要な古いカメラ用)
-            if not cap.isOpened():
-                if cap: cap.release()
-                try:
-                    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                except Exception:
-                    cap = cv2.VideoCapture()
-
-            # 3. 最後にバックエンド指定なしで試行
-            if not cap.isOpened():
-                if cap: cap.release()
-                cap = cv2.VideoCapture(idx)
-        else:
-            # Linux (V4L2)
-            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-            if not cap.isOpened():
-                cap.release()
-                cap = cv2.VideoCapture(idx)
-
-        if cap.isOpened():
+        if cap and cap.isOpened():
             backend_name = cap.getBackendName() if hasattr(cap, "getBackendName") else "Unknown"
-            print(f"カメラ初期化成功 (Index: {idx}, Backend: {backend_name})")
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-            InspectionEngine.apply_camera_settings(cap, cam_cfg)
+            print(f"カメラ初期化成功 (Index: {index}, Backend: {backend_name})")
+            try:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                InspectionEngine.apply_camera_settings(cap, cam_cfg)
+            except Exception:
+                pass
         return cap
 
     @staticmethod
     def apply_camera_settings(cap, cam_cfg):
-        """カメラパラメータを設定"""
-        cap.set(cv2.CAP_PROP_GAIN, cam_cfg.get("gain", 70))
-        cap.set(cv2.CAP_PROP_EXPOSURE, cam_cfg.get("exposure", 2500))
-        cap.set(cv2.CAP_PROP_BRIGHTNESS, cam_cfg.get("brightness", 0))
-        cap.set(cv2.CAP_PROP_CONTRAST, cam_cfg.get("contrast", 50))
-        cap.set(cv2.CAP_PROP_SATURATION, cam_cfg.get("saturation", 50))
-        cap.set(cv2.CAP_PROP_HUE, cam_cfg.get("hue", 0))
-        cap.set(cv2.CAP_PROP_WB_TEMPERATURE, cam_cfg.get("wb_temp", 4000))
-        autofocus = cam_cfg.get("autofocus", 1) # Default 1 (オートフォーカスON)
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, autofocus)
-        if hasattr(cv2, "CAP_PROP_FOCUS") and autofocus == 0:
-            cap.set(cv2.CAP_PROP_FOCUS, cam_cfg.get("focus", 0))
-        cap.set(cv2.CAP_PROP_ZOOM, cam_cfg.get("zoom", 1))
-        cap.set(cv2.CAP_PROP_FPS, cam_cfg.get("fps", 30))
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        """カメラパラメータを設定 (各項目ごとに例外保護)"""
+        if cap is None or not cap.isOpened():
+            return
+
+        props = [
+            (cv2.CAP_PROP_GAIN, "gain", 70),
+            (cv2.CAP_PROP_EXPOSURE, "exposure", 2500),
+            (cv2.CAP_PROP_BRIGHTNESS, "brightness", 0),
+            (cv2.CAP_PROP_CONTRAST, "contrast", 50),
+            (cv2.CAP_PROP_SATURATION, "saturation", 50),
+            (cv2.CAP_PROP_HUE, "hue", 0),
+            (cv2.CAP_PROP_WB_TEMPERATURE, "wb_temp", 4000),
+            (cv2.CAP_PROP_AUTOFOCUS, "autofocus", 1),
+            (cv2.CAP_PROP_ZOOM, "zoom", 1),
+            (cv2.CAP_PROP_FPS, "fps", 30)
+        ]
+        
+        for prop_id, cfg_key, default_val in props:
+            try:
+                val = cam_cfg.get(cfg_key, default_val)
+                cap.set(prop_id, float(val))
+            except Exception:
+                pass
+        
+        # フォーカスの個別処理 (AFがOFFの場合のみ)
+        if cam_cfg.get("autofocus", 1) == 0:
+            try:
+                if hasattr(cv2, "CAP_PROP_FOCUS"):
+                    cap.set(cv2.CAP_PROP_FOCUS, float(cam_cfg.get("focus", 0)))
+            except Exception:
+                pass
+        
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # ログ保存
@@ -498,8 +504,11 @@ class InspectionEngine:
         if frame is None:
             return
         if config_manager:
-            res_key = "res_ng" if "NG" in subdir.upper() else "res_ok"
-            res = config_manager.get("storage", res_key, default="640x480")
+            is_ng = "NG" in subdir.upper()
+            primary_key = "res_record" if is_ng else "res_skip"
+            compat_key = "res_ng" if is_ng else "res_ok"
+            storage = config_manager.get("storage", default={})
+            res = storage.get(primary_key, storage.get(compat_key, "640x480"))
             if res == "保存しない":
                 return
             try:

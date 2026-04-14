@@ -89,29 +89,47 @@ class TMApp:
         self.preview_paused = False
         self._current_mode = "inspection"
         self.is_rendering = False
+        self.pattern_inputs = {}
+        self._spec_initialized = False
+        self._status_reset_after_id = None
 
     def _setup_hardware(self):
         """GPIO・カメラ・テンプレート読み込み"""
         self._close_hardware()
         try:
             # GPIO
-            gpio = self.cfg.data.get("gpio_pins", {})
-            start_pin = gpio.get("pin_Start", -1)
-            if start_pin > 0:
-                dev = DigitalInputDevice(start_pin, pull_up=True)
-                dev.when_activated = self._on_trigger
-                self.inputs["start"] = dev
+            gpio_cfg = self.cfg.get("gpio", default={})
+            
+            # トリガー入力
+            for t in gpio_cfg.get("triggers", []):
+                pin = t.get("pin", 0)
+                if pin > 0:
+                    dev = DigitalInputDevice(pin, pull_up=True)
+                    # 最初のトリガーを検査トリガーとして扱う
+                    if not self.inputs:
+                        dev.when_activated = self._on_trigger
+                    self.inputs[t["id"]] = dev
 
-            ok_pin = gpio.get("pin_OKlog", -1)
-            ng_pin = gpio.get("pin_NGlog", -1)
+            # パターン入力
+            self.pattern_inputs = {}
+            for p in gpio_cfg.get("pattern_pins", []):
+                pin = p.get("pin", 0)
+                if pin > 0:
+                    self.pattern_inputs[p["id"]] = DigitalInputDevice(pin, pull_up=True)
+
+            # 出力
+            outs = gpio_cfg.get("outputs", {})
+            ok_pin = outs.get("ok", -1)
+            ng_pin = outs.get("ng", -1)
             if ok_pin > 0:
                 self.out_ok = OutputDevice(ok_pin)
             if ng_pin > 0:
                 self.out_ng = OutputDevice(ng_pin)
 
             # カメラ
-            self.cap = InspectionEngine.open_camera(self.cfg)
-            if not self.cap.isOpened():
+            cam_cfg = self.cfg.get("camera", default={})
+            self.cap = InspectionEngine.open_camera(cam_cfg.get("index", 0), cam_cfg)
+            if self.cap is None or not self.cap.isOpened():
                 self.logger.warning("カメラを開けませんでした。モックに切り替えます。")
                 self.cap = None
 
@@ -133,6 +151,10 @@ class TMApp:
                 for dev in self.inputs.values():
                     if hasattr(dev, "close"): dev.close()
                 self.inputs.clear()
+            if hasattr(self, 'pattern_inputs'):
+                for dev in self.pattern_inputs.values():
+                    if hasattr(dev, "close"): dev.close()
+                self.pattern_inputs.clear()
             for dev_attr in ['out_ok', 'out_ng']:
                 dev = getattr(self, dev_attr, None)
                 if dev and hasattr(dev, "close"):
@@ -153,6 +175,7 @@ class TMApp:
     # ------------------------------------------------------------------
     def _setup_gui(self):
         self.root = tk.Tk()
+        self.root.app_instance = self
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
         self.root.configure(bg=COLOR_BG_MAIN)
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
@@ -172,6 +195,7 @@ class TMApp:
         self._build_header()
         self._build_content_area()
         self._update_mode_ui()
+        self._sync_expected_spec_display(initial=True)
 
         # バックグラウンドスレッド起動
         threading.Thread(target=self._preview_loop, daemon=True).start()
@@ -250,14 +274,12 @@ class TMApp:
         pnl_outer.configure(width=420)
         pnl_outer.pack_propagate(False)
 
-        # 現在仕様
-        tk.Label(pnl, text="現在仕様", font=FONT_BOLD,
+        # 期待仕様
+        tk.Label(pnl, text="期待仕様", font=FONT_BOLD,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(pady=(5, 2))
         spec_frm = tk.Frame(pnl, bg=COLOR_BG_INPUT)
         spec_frm.pack(fill=tk.X, padx=10, pady=3)
-        self.v_spec_id = tk.StringVar(
-            value=self.cfg.get("current_spec", "specification", default="1"))
-        # 車種表示を削除し、仕様のみを表示するように変更
+        self.v_spec_id = tk.StringVar(value="期待: --")
         tk.Label(spec_frm, text="仕様:", font=FONT_NORMAL,
                  bg=COLOR_BG_INPUT, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT, padx=15)
         self.lbl_spec = tk.Label(spec_frm, textvariable=self.v_spec_id,
@@ -377,6 +399,27 @@ class TMApp:
         self.lbl_clock.config(text=now)
         self.root.after(1000, self._update_clock)
 
+    def _schedule_status_reset_if_needed(self):
+        """設定に応じて結果表示を一定時間後に待機状態へ戻す"""
+        try:
+            sec = float(self.cfg.get("inference", "result_display_time", default=0.0))
+        except Exception:
+            sec = 0.0
+        if sec <= 0:
+            return
+        if self._status_reset_after_id is not None:
+            try:
+                self.root.after_cancel(self._status_reset_after_id)
+            except Exception:
+                pass
+            self._status_reset_after_id = None
+
+        def _reset():
+            self._status_reset_after_id = None
+            self._update_status("検査モード 待機中", COLOR_BG_PANEL)
+
+        self._status_reset_after_id = self.root.after(int(sec * 1000), _reset)
+
     # ------------------------------------------------------------------
     # カメラプレビューループ
     # ------------------------------------------------------------------
@@ -388,17 +431,19 @@ class TMApp:
                 continue
             if self.cap is None or not self.cap.isOpened():
                 self.logger.warning("カメラ切断を検出。再接続を試みます...")
-                self.cap = InspectionEngine.open_camera(self.cfg)
-                if not self.cap.isOpened():
+                cam_cfg = self.cfg.get("camera", default={})
+                self.cap = InspectionEngine.open_camera(cam_cfg.get("index", 0), cam_cfg)
+                if self.cap is None or not self.cap.isOpened():
                     time.sleep(3.0)
                 continue
             try:
                 with self.camera_lock:
-                    # Windowsでの遅延対策（バッファの読み捨て）
-                    # buffer_size=1に設定していても、ドライバレベルで溜まる場合があるため
-                    # 複数回 grab() するのが効果的だが、ここでは1枚だけ grab してから読むことで最新化
-                    # 自体は read() で行う。
-                    ret, frame = self.cap.read()
+                    # 取得と取り出しを分離してロック保持時間を短縮
+                    # grab失敗時はそのフレームを諦めて次周回で再試行
+                    if not self.cap.grab():
+                        ret, frame = False, None
+                    else:
+                        ret, frame = self.cap.retrieve()
                 if ret:
                     self.last_frame = frame.copy()
                     # 描画処理が追いついていない場合はスキップして最新化を優先
@@ -407,14 +452,20 @@ class TMApp:
                         self._render_preview(frame)
             except Exception as e:
                 self.logger.error(f"Preview error: {e}")
-            time.sleep(0.01)  # レスポンス向上のため待ち時間を短縮
+            try:
+                fps = float(self.cfg.get("inference", "preview_fps", default=15.0))
+                fps = max(1.0, min(60.0, fps))
+                interval = 1.0 / fps
+            except Exception:
+                interval = 1.0 / 15.0
+            time.sleep(interval)
 
     def _render_preview(self, frame):
         """フレームを Canvas に描画 (設定解像度を尊重)"""
+        dispatch_success = False
         try:
             cam_preview_res = self.cfg.get("camera", "preview_res", default="640x480")
             if cam_preview_res == "プレビューなし":
-                self.is_rendering = False
                 return
 
             try:
@@ -466,6 +517,40 @@ class TMApp:
             self.logger.error(f"Render preview error: {e}")
             self.is_rendering = False
 
+    def _get_expected_spec(self):
+        """GPIO入力状態から期待するパターン名（＝フォルダ名）を取得する"""
+        patterns = self.cfg.get("patterns", default={})
+        pat_order = self.cfg.get("pattern_order", default=[])
+        if not pat_order:
+            return "なし"
+        
+        # 現在のピン状態を取得 (configの定義順)
+        pat_pins = self.cfg.get("gpio", "pattern_pins", default=[])
+        current_state = []
+        for p in pat_pins:
+            dev = self.pattern_inputs.get(p["id"])
+            current_state.append(1 if (dev and dev.is_active) else 0)
+        
+        for pid in pat_order:
+            p_data = patterns.get(pid, {})
+            cond = p_data.get("pin_condition", [])
+            # 全てのピン条件が一致するものを探す
+            if len(cond) == len(current_state):
+                if all(c == s for c, s in zip(cond, current_state)):
+                    # パターン名を返す（＝フォルダ名として扱われる）
+                    return p_data.get("name", pid)
+        
+        return "不一致"
+
+    def _sync_expected_spec_display(self, initial=False):
+        """期待仕様ラベルを現在状態に同期（初期時の不一致表示を抑制）"""
+        spec = self._get_expected_spec()
+        if (initial or not self._spec_initialized) and spec == "不一致":
+            self.v_spec_id.set("期待: --")
+        else:
+            self.v_spec_id.set(f"期待: {spec}")
+            self._spec_initialized = True
+
     # ------------------------------------------------------------------
     # 検査ロジックループ
     # ------------------------------------------------------------------
@@ -488,17 +573,41 @@ class TMApp:
 
             self.root.after(0, lambda: self._update_status("検査中...", COLOR_ACCENT))
 
+            inference_cfg = self.cfg.get("inference", default={})
+            max_retries = int(inference_cfg.get("max_retries", 0))
+            retry_interval = float(inference_cfg.get("burst_interval", 0.2))
+            retry_interval = max(0.0, retry_interval)
+
+            result = None
             try:
-                result = self.engine.run(frame, self.template_paths, self.template_images)
+                for attempt in range(max_retries + 1):
+                    frame = self.last_frame
+                    if frame is None:
+                        break
+                    result = self.engine.run(frame, self.template_paths, self.template_images)
+                    if result is not None:
+                        break
+                    if attempt < max_retries and retry_interval > 0:
+                        time.sleep(retry_interval)
             except Exception as e:
                 self.logger.error(f"検査エラー: {e}")
                 self.root.after(0, lambda: self._update_status("エラー", COLOR_NG))
                 continue
+            finally:
+                # チャタリング等で滞留した古いトリガーは破棄し、最新サイクルを優先
+                while True:
+                    try:
+                        self.trigger_queue.get_nowait()
+                    except queue.Empty:
+                        break
 
             now_full = datetime.datetime.now().strftime("%m/%d %H:%M")
             now_time = datetime.datetime.now().strftime("%H:%M:%S") # ログ保存用
             spec_map = self.cfg.data.get("specification_mapping", {})
-            current_spec = self.cfg.get("current_spec", "specification", default="1")
+            current_spec = self._get_expected_spec()
+            
+            # UI表示用に同期（既にタイマーで更新されているが、判定直後の確実な反映のため）
+            self.root.after(0, lambda cs=current_spec: self.v_spec_id.set(f"期待: {cs}"))
 
             if result is not None:
                 # 一致した仕様IDが期待通りか判定
@@ -513,9 +622,12 @@ class TMApp:
                     self.engine.save_log("OK", result)
                     self._save_csv_log("OK", result, f"Score: {self.engine.last_score:.2f}")
                     self.engine.save_image(frame, "OK", config_manager=self.cfg)
+                    self._schedule_status_reset_if_needed()
                     if self.out_ok:
+                        ok_t = float(self.cfg.get("inference", "ok_output_time", default=0.3))
+                        ok_t = max(0.0, ok_t)
                         self.out_ok.on()
-                        time.sleep(0.3)
+                        time.sleep(ok_t)
                         self.out_ok.off()
                 else:
                     label = f"NG 期待:{current_spec} 検出:{result}"
@@ -526,13 +638,12 @@ class TMApp:
 
     def _handle_ng(self, label, frame, time_str):
         """NGの際の処理（UI更新・信号出力・履歴追加）"""
-        info_text = f"最高スコア: {self.engine.last_score:.2f}"
+        score_info = f"最高スコア: {self.engine.last_score:.2f}"
         # 履歴表示用に文言を短縮 (E:期待, D:検出, Sc:スコア)
-        # "NG " の文字を削除
-        short_label = label.replace("NG ", "").replace(" 期待:", " E:").replace(" 検出:", " D:").replace(" (未検出)", " (-)")
-        lb_text = f"{time_str} {short_label} Sc:{self.engine.last_score:.2f}"
+        short_label = label.replace("期待:", "E:").replace("検出:", "D:").replace(" (未検出)", "(-)")
+        lb_text = f"[{time_str}] {short_label} Sc:{self.engine.last_score:.2f}"
         
-        self.root.after(0, lambda l=label, info=info_text, lt=lb_text: [
+        self.root.after(0, lambda l=label, info=score_info, lt=lb_text: [
             self._update_status(f"NG  {l}", COLOR_NG),
             self.v_last_result.set(f"✗ {l}"),
             self.lbl_last_result.config(fg=COLOR_NG),
@@ -540,11 +651,27 @@ class TMApp:
             self.lb_history.insert(0, lt)
         ])
         self.engine.save_log("NG", label)
-        self._save_csv_log("NG", label, info_text)
+        self._save_csv_log("NG", label, score_info)
         path = self.engine.save_image(frame, "NG", config_manager=self.cfg)
         self.ng_history.insert(0, {"label": label, "time": time_str, "img_path": path})
+        self._schedule_status_reset_if_needed()
         if self.out_ng:
             self.out_ng.on()
+            try:
+                ng_t = float(self.cfg.get("inference", "ng_output_time", default=0.0))
+            except Exception:
+                ng_t = 0.0
+            if ng_t > 0:
+                threading.Thread(target=self._auto_off_ng_output, args=(ng_t,), daemon=True).start()
+
+    def _auto_off_ng_output(self, seconds):
+        """指定秒後にNG出力を自動OFF"""
+        try:
+            time.sleep(max(0.0, float(seconds)))
+            if self.out_ng:
+                self.out_ng.off()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # 操作パネルのアクション
@@ -685,119 +812,106 @@ class TMApp:
         self.preview_paused = False
         self._update_status("検査モード 待機中", COLOR_BG_PANEL)
         self.editor_view.sync_settings()
-        self._setup_hardware()
+        threading.Thread(target=self._setup_hardware, daemon=True).start()
+        self._sync_expected_spec_display(initial=True)
 
     def _show_help(self):
-        """操作ヘルプを表示 (最新機能に合わせ刷新)"""
-        HelpWindow(self.root, "操作ヘルプ", {
-            "検査の基本フロー": (
-                "本システムは「トリガー待機 → 撮影 → 解析 → 判定出力」のサイクルで動作します。\n\n"
-                "1. 起動すると自動的に「検査モード」で待機状態になります。\n"
-                "2. 外部信号(GPIO)が入ると、現在の映像をキャプチャし判定を開始します。\n"
-                "3. 指定したマスター画像とマッチングを行い、設定された閾値を上回ればOK、下回ればNGとなります。\n"
-                "4. 判定完了後、OK/NG信号を一定時間出力し、画像を自動保存します。"
-            ),
-            "判定結果と履歴の確認": (
-                "検査結果は画面中央の大きな文字と、右パネルの「最終判定」欄に表示されます。\n\n"
-                "・一致: [仕様名/ファイル名] (スコア: 0.xx)\n"
-                "  どれくらいの確信度(1.0に近いほど高精度)で一致したかを示します。\n"
-                "・NG(未検出): どのマスターとも一致しなかった場合に表示されます。\n"
-                "・NG履歴: 最近のNG発生日時がリスト表示されます。\n"
-                "  ★履歴を【ダブルクリック】することで、保存された画像を拡大表示できます。"
-            ),
-            "編集モード (マスター登録)": (
-                "新しい仕様を追加したり、既存の画像を調整したりするためのモードです。\n\n"
-                "ステップ①: [カメラから撮影] または [PCから読込] で元画像を取得します。\n"
-                "ステップ②: [点・範囲の選択] でワーク部位を囲み、[射影変換] で歪みを補正します。必要に応じて [輪郭採用] を使うと自動で矩形を抽出できます。\n"
-                "ステップ③: [マスター登録] を押すと、現在の画像を検査用マスターとして保存します。"
-            ),
-            "便利な機能と設定": (
-                "・CSVログ: 検査結果は `results/csv/` に日別で自動記録されます。\n"
-                "・オートフォーカス: 設定画面でONにすると、カメラ側で自動的に焦点を合わせます。\n"
-                "・容量監視: 保存フォルダの容量が上限を超えると、古い画像から自動削除されます。"
-            ),
-            "異常時の対応": (
-                "NGが発生すると、ブザー信号(NG出力)が鳴り続けます。内容を確認し、問題なければ右パネル下部の「ブザー停止」ボタンで解除してください。"
-            )
-        })
+        help_data = {
+            "概要": "テンプレートマッチングを用いた部品・外観検査システムです。\n\n【基本的な流れ】\n1. 設定画面でカメラや判定条件（ROI/二値化など）を整える。\n2. パターン設定で、GPIO入力ピンとマスター画像の対応を紐付ける。\n3. トリガー待ち状態になります。外部信号または仮想ボタンで撮影が行われます。",
+            "検査モード": "自動判定を行う通常モードです。\n・現在のGPIOピンの状態から「期待されるパターン」を特定し、撮影した画像とマスター画像を照合します。\n・一致スコアがしきい値を超えればOK信号、下回ればNG信号を出力します。\n・判定結果は指定フォルダに画像保存されます。",
+            "編集モード": "検査に使用するマスター画像（テンプレート）を登録・編集するモードです。\n・現在のカメラ映像をキャプチャし、必要な部分を切り抜いて登録します。\n・射影変換（歪み補正）の基準となる四角形枠（ROI）の設定もここで行います。\n・マスター登録時には、パターン設定で使用する「名称」と同じフォルダ名で保存してください。",
+            "期待仕様": "メイン画面上部に表示されます。\n・GPIO入力（または仮想GPIOパネルのチェック）によって、リアルタイムに変化します。\n・「不一致」と表示される場合は、現在のピンの組み合わせがパターン設定に登録されていません。",
+            "NG履歴": "最近のNG判定がリスト表示されます。\n・期待したパターン名と、実際に検出されたパターン名、および最高スコアが表示されます。\n・【ダブルクリック】で保存された画像を確認できます。"
+        }
+        HelpWindow(self.root, "操作ヘルプ", help_data)
 
     # ------------------------------------------------------------------
     # 容量監視
     # ------------------------------------------------------------------
     def _monitor_storage(self):
-        """保存フォルダの容量を確認し、上限を超えた場合は古い画像から削除する（10分おき・非同期）"""
-        _INTERVAL = 10 * 60 * 1000
+        """保存フォルダの容量を確認し、上限超過時に古いファイルを削除する (10分おき・非同期)"""
+        _INTERVAL_MS = 10 * 60 * 1000  # 10分
         
         def _thread_task():
             try:
-                stor = self.cfg.data.get("storage", {})
-                if not stor.get("auto_delete_enabled", False):
+                st = self.cfg.get("storage", default={})
+                if not st.get("auto_delete_enabled", False):
                     return
-                max_gb = float(stor.get("max_results_gb", 0))
+
+                max_gb = float(st.get("max_results_gb", 30))
                 if max_gb <= 0:
                     return
-                
-                import shutil
-                res_dir = Path(stor.get("results_dir", "./results"))
-                img_dir = res_dir / "images"
+
+                res_dir = Path(self.cfg.get("storage", "results_dir", default="./results"))
+                images_dir = res_dir / "images"
                 debug_dir = res_dir / "debug"
+                logs_dir = res_dir / "logs"
                 
-                files = []
-                if img_dir.exists():
-                    files.extend([f for f in img_dir.rglob("*")
-                                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png")])
-                if debug_dir.exists():
-                    files.extend([f for f in debug_dir.rglob("*")
-                                  if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png")])
+                # 画像ファイルを更新日時昇順（古い順）でリストアップ
+                files_to_check = []
+                for d in [images_dir, debug_dir]:
+                    if d.exists():
+                        files_to_check.extend([
+                            f for f in d.rglob("*")
+                            if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png")
+                        ])
                 
-                if not files:
+                if not files_to_check:
                     return
 
-                files.sort(key=lambda f: f.stat().st_mtime)
-                total = sum(f.stat().st_size for f in files)
-                max_bytes = max_gb * 1024 ** 3
-                
-                # フェイルセーフ：ディスク容量自体が1GB未満の場合は強制削減
-                try:
-                    usage = shutil.disk_usage(res_dir)
-                    free_gb = usage.free / (1024 ** 3)
-                    if free_gb < 1.0:
-                        max_bytes = min(max_bytes, total - (1.0 * 1024 ** 3))
-                        if max_bytes < 0: max_bytes = 0
-                except Exception:
-                    pass
+                files_to_check.sort(key=lambda f: f.stat().st_mtime)
+                total_size = sum(f.stat().st_size for f in files_to_check)
 
-                if total > max_bytes:
-                    target = max_bytes * 0.9
-                    for f in files:
-                        if total <= target:
-                            break
-                        try:
-                            sz = f.stat().st_size
-                            f.unlink()
-                            total -= sz
-                            self.logger.info(f"[容量監視] 削除(画像): {f.name}")
-                        except Exception as e:
-                            self.logger.warning(f"[容量監視] 削除失敗: {f.name} - {e}")
+                import shutil
+                usage = shutil.disk_usage(res_dir)
+                free_gb = usage.free / (1024 ** 3)
+                max_bytes = max_gb * (1024 ** 3)
 
-                # ログファイルの監視（30日以上経過したものを削除）
-                log_dir = res_dir / "logs"
-                if log_dir.exists():
+                needs_deletion = False
+                target_bytes = total_size
+
+                if total_size > max_bytes:
+                    needs_deletion = True
+                    target_bytes = max_bytes * 0.9  # 上限の90%まで減らす
+                elif free_gb < 1.0:
+                    needs_deletion = True
+                    target_bytes = max(0, total_size - (1.0 * 1024**3))
+
+                if not needs_deletion:
+                    return
+
+                self.logger.info(f"[容量監視] 削除開始。現在サイズ: {total_size/(1024**3):.2f} GB / 空き: {free_gb:.2f} GB")
+
+                deleted_count = 0
+                for f in files_to_check:
+                    if total_size <= target_bytes:
+                        break
+                    try:
+                        file_size = f.stat().st_size
+                        f.unlink()
+                        total_size -= file_size
+                        deleted_count += 1
+                    except Exception as e:
+                        self.logger.warning(f"[容量監視] 削除失敗: {f.name} - {e}")
+
+                if deleted_count > 0:
+                    self.logger.info(f"[容量監視] {deleted_count} 件削除完了。残サイズ: {total_size/(1024**3):.2f} GB")
+
+                # ログファイルは30日超過分を削除
+                if logs_dir.exists():
                     now_ts = time.time()
-                    for log_f in log_dir.glob("*.log"):
-                        if log_f.is_file():
-                            if now_ts - log_f.stat().st_mtime > 2592000:
-                                try:
-                                    log_f.unlink()
-                                    self.logger.info(f"[容量監視] 削除(旧ログ): {log_f.name}")
-                                except Exception: pass
-
+                    for log_f in logs_dir.glob("*.log"):
+                        if log_f.is_file() and now_ts - log_f.stat().st_mtime > 2592000:
+                            try:
+                                log_f.unlink()
+                            except Exception:
+                                pass
             except Exception as e:
                 self.logger.error(f"[容量監視] エラー: {e}")
             finally:
                 if self.running:
-                    self.root.after(_INTERVAL, self._monitor_storage)
-                    
+                    self.root.after(_INTERVAL_MS, self._monitor_storage)
+
         threading.Thread(target=_thread_task, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -807,7 +921,7 @@ class TMApp:
         try:
             self.mock_root = tk.Toplevel(self.root)
             self.mock_root.title("仮想GPIOパネル")
-            self.mock_root.geometry("360x500")
+            self.mock_root.geometry("360x650")
             self.mock_root.configure(bg=COLOR_BG_MAIN)
             self.mock_root.attributes("-topmost", True)
             self.mock_root.resizable(False, False)
@@ -818,23 +932,48 @@ class TMApp:
             trig_outer, trig_inner = create_card(container, "仮想入力")
             trig_outer.pack(fill=tk.X, pady=(0, 12))
 
+            # 最初のトリガー
+            triggers = self.cfg.get("gpio", "triggers", default=[])
+            start_pin = triggers[0]["pin"] if triggers else -1
             btn = tk.Button(
                 trig_inner,
-                text="撮影開始",
+                text=f"撮影開始 (ピン {start_pin})",
                 font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN,
                 activebackground=COLOR_ACCENT, activeforeground="black",
                 relief="flat", cursor="hand2",
-                command=lambda: self._on_trigger())
+                command=lambda: self._pulse_mock_input(start_pin))
             btn.pack(fill=tk.X, pady=4)
-            Tooltip(btn, "クリックで撮影トリガーを送信します")
+            Tooltip(btn, "ボタンを押した瞬間だけ入力がONになります")
+
+            # パターン入力ピン
+            self.mock_selectors = {}
+            pat_pins = self.cfg.get("gpio", "pattern_pins", default=[])
+            if pat_pins:
+                pat_outer, pat_inner = create_card(container, "仮想入力 (パターン切替)")
+                pat_outer.pack(fill=tk.X, pady=(0, 12))
+                for p in pat_pins:
+                    pin = p.get("pin", 0)
+                    if pin <= 0: continue
+                    f = tk.Frame(pat_inner, bg=COLOR_BG_PANEL)
+                    f.pack(fill=tk.X, pady=2)
+                    var = tk.BooleanVar(value=MockManager.get_input_state(pin))
+                    cb = tk.Checkbutton(f, text=f"{p['name']} (ピン {pin})",
+                                        font=FONT_NORMAL, variable=var,
+                                        bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+                                        selectcolor=COLOR_BG_INPUT, activebackground=COLOR_BG_PANEL,
+                                        activeforeground=COLOR_TEXT_MAIN, relief="flat",
+                                        command=lambda pn=pin, v=var: MockManager.set_input(pn, v.get()))
+                    cb.pack(side=tk.LEFT)
+                    self.mock_selectors[str(pin)] = var
 
             out_outer, out_inner = create_card(container, "仮想出力状態")
             out_outer.pack(fill=tk.X)
 
             self.mock_indicators = {}
+            outs = self.cfg.get("gpio", "outputs", default={})
             for name, key, color in [
-                ("OK出力", "pin_OKlog", COLOR_OK),
-                ("NG出力", "pin_NGlog", COLOR_NG),
+                ("OK出力", "ok", COLOR_OK),
+                ("NG出力", "ng", COLOR_NG),
             ]:
                 f = tk.Frame(out_inner, bg=COLOR_BG_PANEL)
                 f.pack(fill=tk.X, pady=6)
@@ -847,23 +986,47 @@ class TMApp:
                 led.pack(side=tk.RIGHT, padx=5)
                 circle = led.create_oval(2, 2, 14, 14, fill="#333", outline="#555")
                 
-                pin = self.cfg.get("gpio_pins", key, default=-1)
+                pin = outs.get(key, -1)
                 self.mock_indicators[str(pin)] = (led, circle, color)
 
             tk.Label(container, text="※Windowsデバッグ専用機能",
                      font=(FONT_FAMILY, 9), bg=COLOR_BG_MAIN, fg=COLOR_TEXT_SUB).pack(pady=10)
-
             self._update_mock_ui()
         except Exception as e:
             self.logger.error(f"仮想GPIOパネルエラー: {e}")
+
+    def _pulse_mock_input(self, pin):
+        """仮想入力を一瞬ONにする"""
+        if pin <= 0: return
+        def _pulse():
+            MockManager.set_input(pin, True)
+            time.sleep(0.15)
+            MockManager.set_input(pin, False)
+        threading.Thread(target=_pulse, daemon=True).start()
 
     def _update_mock_ui(self):
         try:
             if not hasattr(self, "mock_root") or not self.mock_root.winfo_exists():
                 return
+            
+            # 出力 (LED) 更新
             for pin, (led, circle, color) in self.mock_indicators.items():
                 state = MockManager.get_output_state(pin)
                 led.itemconfig(circle, fill=color if state else "#333")
+            
+            # 入力 (パターン) 同期: 外部（MockManager）の変化を UI に反映
+            # ただし、UI側で Checkbutton を操作した直後に上書きされないよう、
+            # 状態が異なるときのみ適用する
+            if hasattr(self, "mock_selectors"):
+                for pin_str, var in self.mock_selectors.items():
+                    current = MockManager.get_input_state(pin_str)
+                    if var.get() != current:
+                        var.set(current)
+
+            # メインUIの「期待仕様」ラベルをリアルタイム同期更新
+            current_spec = self._get_expected_spec()
+            self._sync_expected_spec_display(initial=not self._spec_initialized)
+
             self.mock_root.after(200, self._update_mock_ui)
         except Exception as e:
             self.logger.error(f"仮想GPIOパネル更新エラー: {e}")

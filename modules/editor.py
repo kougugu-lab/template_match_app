@@ -99,6 +99,28 @@ class EditorView(tk.Frame):
 
         self.sync_settings()
         self.update_button_states()
+        
+        # UI描画を高速化するためエンジンインスタンスを使い回す
+        self.engine = InspectionEngine(self.cfg)
+
+    def _make_spinbox(self, parent, variable, from_, to, increment=1, width=7):
+        """編集ツール共通の視認性重視スピンボックス"""
+        sp = tk.Spinbox(
+            parent,
+            textvariable=variable,
+            from_=from_,
+            to=to,
+            increment=increment,
+            width=width,
+            font=FONT_SET_LBL,
+            bg="#2c2e2f",
+            fg="white",
+            buttonbackground="#45494a",
+            insertbackground="white",
+            relief="flat",
+            bd=1
+        )
+        return sp
 
     def _sync_aug_paths(self):
         """設定からデフォルトフォルダを取得し反映する"""
@@ -159,12 +181,31 @@ class EditorView(tk.Frame):
         ctrl_sb.pack(side="right", fill="y")
 
         def _wheel(event):
-            # サイドバー内でのみ垂直スクロール
-            ctrl_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        
-        # サイドバー領域に入ったときだけマウスホイールをバインド
-        self.ctrl_frame.bind("<Enter>", lambda _: self.ctrl_frame.bind_all("<MouseWheel>", _wheel))
-        self.ctrl_frame.bind("<Leave>", lambda _: self.ctrl_frame.unbind_all("<MouseWheel>"))
+            # サイドバー内でのみ垂直スクロール（Windows/Linux差分吸収）
+            if hasattr(event, "delta") and event.delta != 0:
+                step = int(-1 * (event.delta / 120))
+            elif getattr(event, "num", None) == 4:
+                step = -1
+            elif getattr(event, "num", None) == 5:
+                step = 1
+            else:
+                step = 0
+            if step != 0:
+                ctrl_canvas.yview_scroll(step, "units")
+
+        def _bind_scroll(_):
+            self.bind_all("<MouseWheel>", _wheel)
+            self.bind_all("<Button-4>", _wheel)
+            self.bind_all("<Button-5>", _wheel)
+
+        def _unbind_scroll(_):
+            self.unbind_all("<MouseWheel>")
+            self.unbind_all("<Button-4>")
+            self.unbind_all("<Button-5>")
+
+        # 右パネル上にカーソルがある時だけ全体ホイールをスクロールへ割り当て
+        right_inner.bind("<Enter>", _bind_scroll)
+        right_inner.bind("<Leave>", _unbind_scroll)
 
         # ---- 左パネル（プレビューキャンバス） ----
         left_outer, left_inner = create_card(self, "プレビュー")
@@ -276,21 +317,21 @@ class EditorView(tk.Frame):
         row1 = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
         row1.pack(fill=tk.X, pady=2)
         tk.Label(row1, text="生成枚数:", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
-        sp_an = tk.Spinbox(row1, textvariable=self.aug_num, from_=1, to=500, width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_an = self._make_spinbox(row1, self.aug_num, 1, 500, increment=1, width=7)
         sp_an.pack(side=tk.LEFT)
         Tooltip(sp_an, "1枚の元画像から何枚のバリエーションを生成するかを指定します。")
         
         row2 = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
         row2.pack(fill=tk.X, pady=2)
         tk.Label(row2, text="回転角(deg):", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
-        sp_aa = tk.Spinbox(row2, textvariable=self.aug_angle, from_=0, to=45, width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_aa = self._make_spinbox(row2, self.aug_angle, 0, 45, increment=0.1, width=7)
         sp_aa.pack(side=tk.LEFT)
         Tooltip(sp_aa, "最大で何ピクセルまでランダムに回転させるかの目安を指定します。")
         
         row3 = tk.Frame(aug_f, bg=COLOR_BG_PANEL)
         row3.pack(fill=tk.X, pady=2)
         tk.Label(row3, text="ノイズ:", font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=14, anchor="w").pack(side=tk.LEFT)
-        sp_ano = tk.Spinbox(row3, textvariable=self.aug_noise, from_=0, to=100, width=7, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
+        sp_ano = self._make_spinbox(row3, self.aug_noise, 0, 100, increment=1, width=7)
         sp_ano.pack(side=tk.LEFT)
         Tooltip(sp_ano, "画像に付加するランダムノイズの強度。")
 
@@ -394,8 +435,7 @@ class EditorView(tk.Frame):
         cv_img = cv2.cvtColor(np.array(self.original_image), cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
         ip = self.cfg.data.get("image_processing", {})
-        dummy_engine = InspectionEngine(self.cfg)
-        b = dummy_engine.binarize(gray, ip)
+        b = self.engine.binarize(gray, ip)
         cnts, _ = cv2.findContours(b, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         valid = [c for c in cnts
                  if self.max_len.get() >= cv2.arcLength(c, True) >= self.min_len.get()
@@ -477,14 +517,12 @@ class EditorView(tk.Frame):
         }
 
         # 共通エンジンの前処理を適用 (OpenCV)
-        from .engine import InspectionEngine
-        dummy_engine = InspectionEngine(self.cfg)
         cv_img = cv2.cvtColor(np.array(base), cv2.COLOR_RGB2BGR)
-        gray = dummy_engine.apply_preprocessing(cv_img, ip)
+        gray = self.engine.apply_preprocessing(cv_img, ip)
 
         # 二値化テストが有効な場合
         if self.enable_binary.get():
-            bin_img = dummy_engine.binarize(gray, ip)
+            bin_img = self.engine.binarize(gray, ip)
             img = Image.fromarray(cv2.cvtColor(bin_img, cv2.COLOR_GRAY2RGB))
         else:
             # 二値化しない場合は補正後のグレートーンをカラーに戻して表示（プレビュー用）
@@ -505,12 +543,15 @@ class EditorView(tk.Frame):
         self.scale_factor = min(cw / iw, ch / ih, 0.95) * self.zoom_level
         dw = int(iw * self.scale_factor)
         dh = int(ih * self.scale_factor)
-        display_img = self.current_image.resize((dw, dh), Image.Resampling.LANCZOS)
+        # 高速な描画のためLANCZOSからBILINEARに変更
+        display_img = self.current_image.resize((dw, dh), Image.Resampling.BILINEAR)
         self.photo = ImageTk.PhotoImage(display_img)
         self.image_x = (cw - dw) // 2
         self.image_y = (ch - dh) // 2
         self.canvas.delete("all")
+        # キャンバス側でも参照を保持してGCを防ぎつつ、古いアイテムをクリア
         self.canvas.create_image(self.image_x, self.image_y, anchor=tk.NW, image=self.photo)
+        self.canvas.image = self.photo
         self.zoom_lbl.config(text=f"Zoom: {int(self.zoom_level * 100)}%")
 
         if not self.is_transformed:

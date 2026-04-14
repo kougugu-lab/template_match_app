@@ -25,8 +25,8 @@ RES_OPTIONS_PREVIEW = ["プレビューなし", "320x240 (QVGA)", "640x480 (VGA)
 RES_OPTIONS_SAVE = RES_OPTIONS + ["保存しない"]
 
 # --- バージョン情報 ---
-APP_VERSION = "1.3.2"
-APP_BUILD_DATE = "2026-04-12"
+APP_VERSION = "1.4.0"
+APP_BUILD_DATE = "2026-04-14"
 APP_NAME = "テンプレートマッチング検査システム"
 
 # --- フォント定義 ---

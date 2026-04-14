@@ -1,5 +1,6 @@
 # hardware.py - GPIO ラッパー・モック
 # inspection_app/modules/hardware.py から流用
+import sys
 
 class MockManager:
     """全モックデバイスの状態を管理するクラス"""
@@ -94,7 +95,20 @@ def is_gpio_available():
     return GPIO_AVAILABLE
 
 
+_mock_warned_pins = set()
+
+def _warn_mock_once(pin, kind, err):
+    key = (str(pin), kind)
+    if key in _mock_warned_pins:
+        return
+    _mock_warned_pins.add(key)
+    print(f"ピン {pin} で代替モック({kind})を使用します: {err}")
+
 try:
+    # Windows では gpiozero/pigpio の初期化ログが大量に出るため最初からモックを使用
+    if sys.platform == "win32":
+        raise ImportError("Windows mock mode")
+
     from gpiozero import DigitalInputDevice as _DigitalInputDevice
     from gpiozero import OutputDevice as _OutputDevice
     GPIO_AVAILABLE = True
@@ -104,7 +118,7 @@ try:
         try:
             return _DigitalInputDevice(pin, *args, **kwargs)
         except Exception as e:
-            print(f"ピン {pin} で代替モック(MockInput)を使用します: {e}")
+            _warn_mock_once(pin, "MockInput", e)
             GPIO_AVAILABLE = False
             return MockInput(pin, *args, **kwargs)
 
@@ -113,7 +127,7 @@ try:
         try:
             return _OutputDevice(pin, *args, **kwargs)
         except Exception as e:
-            print(f"ピン {pin} で代替モック(MockDevice)を使用します: {e}")
+            _warn_mock_once(pin, "MockDevice", e)
             GPIO_AVAILABLE = False
             return MockDevice(pin, *args, **kwargs)
 
