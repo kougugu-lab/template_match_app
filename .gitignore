@@ -5,3 +5,4 @@ results/
 master_image/
 TM_app/
 config.json
+.agents/
