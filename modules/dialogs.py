@@ -286,6 +286,16 @@ class SystemDateTimeDialog(tk.Toplevel):
         sp_s.pack(side=tk.LEFT, padx=4)
         tk.Label(f_time, text="秒", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT)
 
+        for sp in [sp_y, sp_m, sp_d, sp_h, sp_mi, sp_s]:
+            def _stop_ttk_sp(event=None, widget=sp):
+                try:
+                    rep = widget.tk.call('set', '::ttk::spinbox::Repeater')
+                    if rep: widget.tk.call('after', 'cancel', rep)
+                except Exception: pass
+            sp.bind("<ButtonRelease-1>", _stop_ttk_sp, add="+")
+            sp.bind("<Leave>", _stop_ttk_sp, add="+")
+            sp.bind("<FocusOut>", _stop_ttk_sp, add="+")
+
 
 # ---------------------------------------------------------------------------
 # GPIO 診断ダイアログ
@@ -510,12 +520,20 @@ class SettingsDialog(tk.Toplevel):
         return ent
 
     def _spinbox(self, parent, var, from_, to, increment=1, width=8):
-        """配色を改善した標準的な Spinbox ウィジェット作成ヘルパー"""
+        """配色を改善した標準的な Spinbox ウィジェット作成ヘルパー + ラズパイ暴走防止"""
         sp = tk.Spinbox(parent, textvariable=var, from_=from_, to=to,
                         increment=increment, font=FONT_SET_VAL, width=width,
                         bg="#2c2e2f", fg="white", buttonbackground="#45494a",
                         buttoncursor="hand2", relief="flat", bd=1,
-                        command=self._mark_changed)
+                        command=self._mark_changed, repeatdelay=0, repeatinterval=0)
+        def _stop_repeat(event=None):
+            try:
+                rep_id = sp.tk.call('set', '::tk::spinbox::Repeater')
+                if rep_id: sp.tk.call('after', 'cancel', rep_id)
+            except Exception: pass
+        sp.bind("<ButtonRelease-1>", _stop_repeat, add="+")
+        sp.bind("<Leave>", _stop_repeat, add="+")
+        sp.bind("<FocusOut>", _stop_repeat, add="+")
         # 直接入力時の変更検知用
         var.trace_add("write", lambda *a: self._mark_changed())
         return sp

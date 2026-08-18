@@ -104,7 +104,7 @@ class EditorView(tk.Frame):
         self.engine = InspectionEngine(self.cfg)
 
     def _make_spinbox(self, parent, variable, from_, to, increment=1, width=7):
-        """編集ツール共通の視認性重視スピンボックス"""
+        """編集ツール共通の視認性重視スピンボックス + ラズパイ暴走防止"""
         sp = tk.Spinbox(
             parent,
             textvariable=variable,
@@ -118,8 +118,18 @@ class EditorView(tk.Frame):
             buttonbackground="#45494a",
             insertbackground="white",
             relief="flat",
-            bd=1
+            bd=1,
+            repeatdelay=0,
+            repeatinterval=0
         )
+        def _stop_repeat(event=None):
+            try:
+                rep_id = sp.tk.call('set', '::tk::spinbox::Repeater')
+                if rep_id: sp.tk.call('after', 'cancel', rep_id)
+            except Exception: pass
+        sp.bind("<ButtonRelease-1>", _stop_repeat, add="+")
+        sp.bind("<Leave>", _stop_repeat, add="+")
+        sp.bind("<FocusOut>", _stop_repeat, add="+")
         return sp
 
     def _sync_aug_paths(self):
