@@ -28,7 +28,8 @@ DEFAULT_CONFIG = {
         "pattern_pins": [],
         "outputs": {
             "ok": 23, "ng": 24
-        }
+        },
+        "reset_pin": 25
     },
     "patterns": {},
     "pattern_order": [],
@@ -177,6 +178,9 @@ class ConfigManager:
             except Exception:
                 pin = default_pin
             outs[key] = pin if pin in VALID_BCM_PINS else default_pin
+
+        if "reset_pin" not in gpio:
+            gpio["reset_pin"] = 25
 
         # patterns/order
         patterns = data.setdefault("patterns", {})

@@ -117,6 +117,19 @@ class TMApp:
                 if pin > 0:
                     self.pattern_inputs[p["id"]] = DigitalInputDevice(pin, pull_up=True)
 
+            # NGリセット入力
+            reset_pin = gpio_cfg.get("reset_pin")
+            if reset_pin:
+                try:
+                    r_pin = int(reset_pin)
+                    if r_pin > 0:
+                        dev_reset = DigitalInputDevice(r_pin, pull_up=True)
+                        dev_reset.when_activated = self._stop_buzzer
+                        self.inputs["reset"] = dev_reset
+                        self.logger.info(f"NGリセット入力ピン初期化: BCM {r_pin}")
+                except Exception as e:
+                    self.logger.error(f"NGリセット入力ピン初期化失敗: {e}")
+
             # 出力
             outs = gpio_cfg.get("outputs", {})
             ok_pin = outs.get("ok", -1)
@@ -681,9 +694,14 @@ class TMApp:
     # 操作パネルのアクション
     # ------------------------------------------------------------------
     def _stop_buzzer(self):
+        """NG出力・ブザーを停止する（画面ボタンクリックまたはGPIOリセット入力）"""
         if self.out_ng:
-            self.out_ng.off()
+            try:
+                self.out_ng.off()
+            except Exception:
+                pass
         self._update_status("検査モード 待機中", COLOR_BG_PANEL)
+        self.logger.info("NG出力を停止しました（手動/GPIOリセット）")
 
     def _save_csv_log(self, result_type, detail_primary, detail_secondary):
         """CSV形式で検査履歴を書き出す"""

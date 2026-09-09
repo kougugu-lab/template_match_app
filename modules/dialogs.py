@@ -344,6 +344,10 @@ class GPIOTestDialog(tk.Toplevel):
         # パターン切り替え
         for p in self.gpio_settings.get("pattern_pins", []):
             self._make_test_in_row(f_in, f"パターン: {p['name']}", p["pin"], p["id"])
+        # NGリセット入力
+        r_pin = self.gpio_settings.get("reset_pin", 0)
+        if r_pin and int(r_pin) > 0:
+            self._make_test_in_row(f_in, "NGリセット入力", int(r_pin), "reset")
 
         # 出力テスト
         f_out = tk.LabelFrame(scrollable_frame, text="出力テスト (クリック中のみON)", font=FONT_SET_LBL, 
@@ -891,6 +895,25 @@ class SettingsDialog(tk.Toplevel):
         btn_add_pin = tk.Button(i_sel, text="+ 追加", font=FONT_NORMAL, bg=COLOR_ACCENT, fg="black", command=self.add_sel_pin)
         btn_add_pin.pack(anchor="e", pady=5)
         Tooltip(btn_add_pin, "現在選択されているパターンを判別するための外部入力ピンを追加します")
+
+        # NGリセット入力
+        o_rst, i_rst = create_card(sc_L, "NGリセット入力")
+        o_rst.pack(fill=tk.X, pady=10)
+        f_rst = tk.Frame(i_rst, bg=COLOR_BG_PANEL)
+        f_rst.pack(fill=tk.X, pady=5)
+
+        self.led_reset = tk.Canvas(f_rst, width=16, height=16, bg=COLOR_BG_PANEL, highlightthickness=0)
+        self.led_reset.pack(side=tk.LEFT, padx=5)
+        self.circle_reset = self.led_reset.create_oval(2, 2, 14, 14, fill="#333", outline="#555")
+        Tooltip(self.led_reset, "リセットピンの現在の入力状態（通電時に緑色点灯）です。")
+
+        l_rst = tk.Label(f_rst, text="リセットピン:", font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN)
+        l_rst.pack(side=tk.LEFT, padx=(5, 2))
+        Tooltip(l_rst, "外部スイッチ等からNG出力・ブザー音を手動停止/リセットするための入力ピン番号 (BCM番号) です。")
+
+        self.v_reset_pin = tk.StringVar()
+        e_reset = self._entry(f_rst, self.v_reset_pin, width=5)
+        e_reset.pack(side=tk.LEFT, padx=5)
 
         # 中: ピンマップ
         self.show_gpio_map(cM)
@@ -1708,6 +1731,7 @@ class SettingsDialog(tk.Toplevel):
         outs = gpio.get("outputs", {})
         self.v_ok.set(str(outs.get("ok", "")))
         self.v_ng.set(str(outs.get("ng", "")))
+        self.v_reset_pin.set(str(gpio.get("reset_pin", "")))
         
         self.refresh_gpio_trig()
         self.refresh_gpio_sel()
@@ -1771,6 +1795,7 @@ class SettingsDialog(tk.Toplevel):
         
         # GPIO
         d["gpio"]["outputs"] = {"ok": int(self.v_ok.get() or -1), "ng": int(self.v_ng.get() or -1)}
+        d["gpio"]["reset_pin"] = int(self.v_reset_pin.get().strip()) if self.v_reset_pin.get().strip().isdigit() else None
         
         # 画像処理項目
         ip = d.setdefault("image_processing", {})
@@ -1877,6 +1902,8 @@ class SettingsDialog(tk.Toplevel):
         outs = g.get("outputs", {})
         if not _check_pin(outs.get("ok", 0), "OK出力"): return
         if not _check_pin(outs.get("ng", 0), "NG出力"): return
+        reset_p_val = int(self.v_reset_pin.get().strip()) if self.v_reset_pin.get().strip().isdigit() else 0
+        if not _check_pin(reset_p_val, "NGリセット入力"): return
         # システム設定の見える化バリデーション
         try:
             thr = float(self.v_dec_thr.get())
