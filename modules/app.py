@@ -92,11 +92,36 @@ class TMApp:
         self.pattern_inputs = {}
         self._spec_initialized = False
         self._status_reset_after_id = None
+        self._ng_detail_top = None
 
     def _setup_hardware(self):
         """GPIO・カメラ・テンプレート読み込み"""
         self._close_hardware()
         try:
+            # Linux環境のカメラ by_path 自動マイグレーション（未設定の場合に物理USBポートを自動記憶）
+            if sys.platform.startswith("linux"):
+                by_path_dir = "/dev/v4l/by-path"
+                if os.path.exists(by_path_dir):
+                    by_path_map = {}
+                    try:
+                        for fname in sorted(os.listdir(by_path_dir)):
+                            full_p = os.path.join(by_path_dir, fname)
+                            real_p = os.path.realpath(full_p)
+                            if "index0" in fname or real_p not in by_path_map:
+                                by_path_map[real_p] = full_p
+                    except Exception:
+                        pass
+                    
+                    cam_cfg_raw = self.cfg.get("camera", default={})
+                    if not cam_cfg_raw.get("by_path"):
+                        c_idx = cam_cfg_raw.get("index", 0)
+                        dev_node = f"/dev/video{c_idx}"
+                        if dev_node in by_path_map:
+                            cam_cfg_raw["by_path"] = by_path_map[dev_node]
+                            self.cfg.set("camera", cam_cfg_raw)
+                            self.cfg.save()
+                            self.logger.info(f"カメラ物理USBポート(by_path)を自動登録しました: {by_path_map[dev_node]}")
+
             # GPIO
             gpio_cfg = self.cfg.get("gpio", default={})
             
@@ -329,6 +354,7 @@ class TMApp:
         
         # NG履歴ダブルクリックで画像表示 (inspection_app準拠)
         self.lb_history.bind("<Double-1>", self._on_history_double_click)
+        self.lb_history.bind("<Return>", self._on_history_double_click)
 
         hist_btn_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
         hist_btn_frm.pack(fill=tk.X, padx=10, pady=5)
@@ -723,13 +749,22 @@ class TMApp:
         except Exception as e:
             self.logger.error(f"CSVログ保存エラー: {e}")
 
-    def _on_history_double_click(self, event):
+    def _on_history_double_click(self, event=None):
         """履歴ダブルクリックで保存されたNG画像をポップアップ表示"""
         sel = self.lb_history.curselection()
+        if not sel and event is not None and hasattr(event, "y"):
+            try:
+                idx = self.lb_history.nearest(event.y)
+                if 0 <= idx < self.lb_history.size():
+                    self.lb_history.selection_clear(0, tk.END)
+                    self.lb_history.selection_set(idx)
+                    sel = (idx,)
+            except Exception:
+                pass
         if not sel:
             return
         idx = sel[0]
-        if idx < len(self.ng_history):
+        if 0 <= idx < len(self.ng_history):
             hist_item = self.ng_history[idx]
             img_path = hist_item.get("img_path")
             if img_path and os.path.exists(img_path):
@@ -737,7 +772,15 @@ class TMApp:
 
     def _show_ng_image(self, path, time_str, label_text):
         """NG画像のビューワー表示 (inspection_app準拠の縦スクロール形式)"""
+        # 既存の詳細ダイアログがあれば閉じて新しく作成（ウィンドウ重複・多重起動防止）
+        if hasattr(self, "_ng_detail_top") and self._ng_detail_top and self._ng_detail_top.winfo_exists():
+            try:
+                self._ng_detail_top.destroy()
+            except Exception:
+                pass
+
         top = tk.Toplevel(self.root)
+        self._ng_detail_top = top
         top.title(f"NG画像確認 - {time_str}")
         top.configure(bg=COLOR_BG_MAIN)
         top.transient(self.root)
@@ -776,28 +819,47 @@ class TMApp:
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
         top.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
-        try:
-            pil_img = Image.open(path)
-            # Resize based on window width
-            img_max_w = int(win_w * 0.82)
-            img_max_h = int(sh * 0.65)
-            pil_img.thumbnail((img_max_w, img_max_h), Image.Resampling.LANCZOS)
-            
+        tk_img = None
+        # 書き込み直後のファイルや破損に備え、最大3回リトライ
+        for retry in range(3):
+            try:
+                if not os.path.exists(path) or os.path.getsize(path) == 0:
+                    time.sleep(0.08)
+                    continue
+                pil_img = Image.open(path)
+                # Resize based on window width
+                img_max_w = int(win_w * 0.82)
+                img_max_h = int(sh * 0.65)
+                # 高速リサイズ (BILINEAR) でラズパイのCPU負荷を軽減しUIフリーズを防ぐ
+                pil_img.thumbnail((img_max_w, img_max_h), Image.BILINEAR)
+                tk_img = ImageTk.PhotoImage(pil_img)
+                break
+            except Exception as ex:
+                if retry < 2:
+                    time.sleep(0.1)
+                else:
+                    self.logger.error(f"NG画像読み込みエラー: {path} - {ex}")
+
+        if tk_img is not None:
             # Filename label
             fname = os.path.basename(path)
             tk.Label(inner, text=fname, font=FONT_NORMAL, bg=COLOR_BG_MAIN, fg=COLOR_TEXT_SUB).pack(anchor="w", padx=10, pady=(10, 2))
             
-            tk_img = ImageTk.PhotoImage(pil_img)
             lbl_img = tk.Label(inner, image=tk_img, bg=COLOR_BG_MAIN)
             lbl_img.image = tk_img # prevent GC
             lbl_img.pack(padx=10, pady=(0, 5))
-        except Exception as e:
-            tk.Label(inner, text=f"画像読み込みエラー:\n{e}", bg=COLOR_BG_MAIN, fg=COLOR_NG).pack()
+        else:
+            tk.Label(inner, text="画像読み込みエラー: ファイルが存在しないか破損しています。", bg=COLOR_BG_MAIN, fg=COLOR_NG).pack()
 
         # 閉じるボタン
+        def _close_top():
+            self._ng_detail_top = None
+            top.destroy()
+
+        top.protocol("WM_DELETE_WINDOW", _close_top)
         tk.Button(top, text="閉じる", font=FONT_BOLD, bg="#546E7A", fg="white",
                   relief="flat", padx=20,
-                  command=top.destroy).pack(pady=10)
+                  command=_close_top).pack(pady=10)
 
     def _clear_history(self):
         if messagebox.askyesno("確認", "NG履歴を削除しますか？", parent=self.root):

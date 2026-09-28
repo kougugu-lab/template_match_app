@@ -38,107 +38,84 @@ from .hardware import OutputDevice, DigitalInputDevice
 # ---------------------------------------------------------------------------
 def detect_available_cameras():
     """OSが認識しているカメラデバイスを探索し、
-    [(index_int, display_label_str), ...] のリストを返す
+    [(index_int, display_label_str, by_path_str), ...] のリストを返す
+    Linux環境では /dev/v4l/by-path を走査して物理USBポートに永続的に紐付くパスも取得・照合する。
+    ※ UIフリーズやブロッキング、警告ログ多発を防ぐため VideoCapture による同期的接続テストは行わない。
     """
     import sys
     import subprocess
-    import cv2
     import os
 
     devices = []
 
     if sys.platform.startswith("linux"):
-        # Linux (Raspberry Pi 等): /sys/class/video4linux/video*/name
-        # デコーダ・ISP・エンコーダ等の非カメラノードを除外するキーワード
-        NON_CAMERA_KEYWORDS = [
-            "bcm2835-codec", "bcm2835-isp", "bcm2835-fd", "rpivid",
-            "pispbe", "vc4", "m2m", "codec", "decoder", "encoder", "isp", "mem2mem"
-        ]
-
         v4l_dir = "/sys/class/video4linux"
+        by_path_dir = "/dev/v4l/by-path"
+
+        by_path_map = {}
+        if os.path.exists(by_path_dir):
+            try:
+                for fname in sorted(os.listdir(by_path_dir)):
+                    full_p = os.path.join(by_path_dir, fname)
+                    try:
+                        real_p = os.path.realpath(full_p)
+                        if "index0" in fname or real_p not in by_path_map:
+                            by_path_map[real_p] = full_p
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         if os.path.exists(v4l_dir):
-            for entry in sorted(os.listdir(v4l_dir)):
+            ignore_keywords = ["codec", "rpivid", "vc4", "media-controller", "bcm2835-isp", "h264", "hevc", "vp8"]
+            for entry in sorted(os.listdir(v4l_dir), key=lambda x: int(x.replace("video", "")) if x.replace("video", "").isdigit() else 999):
                 if entry.startswith("video"):
                     try:
                         idx = int(entry.replace("video", ""))
-                        node_dir = os.path.join(v4l_dir, entry)
-                        name_file = os.path.join(node_dir, "name")
+                        dev_node = f"/dev/video{idx}"
+                        by_path = by_path_map.get(dev_node, "")
+
+                        name_file = os.path.join(v4l_dir, entry, "name")
                         cam_name = f"カメラ {idx}"
-                        
                         if os.path.exists(name_file):
                             with open(name_file, "r", encoding="utf-8", errors="ignore") as f:
                                 name_text = f.read().strip()
                                 if name_text:
                                     cam_name = name_text
-                        
-                        # 非カメラノード（コーデック/ISP等）の事前判定・即時スキップ
-                        cam_name_lower = cam_name.lower()
-                        if any(kw in cam_name_lower for kw in NON_CAMERA_KEYWORDS):
-                            continue
-                        
-                        # capabilities が存在する場合、CAPTURE 属性の有無を判定
-                        caps_file = os.path.join(node_dir, "device", "capabilities")
-                        if not os.path.exists(caps_file):
-                            caps_file = os.path.join(node_dir, "capabilities")
-                        if os.path.exists(caps_file):
-                            try:
-                                with open(caps_file, "r", encoding="utf-8", errors="ignore") as f:
-                                    caps_hex = f.read().strip()
-                                    caps_val = int(caps_hex, 16) if caps_hex.startswith("0x") else int(caps_hex)
-                                    # 0x00000001 (CAPTURE) または 0x04000000 (CAPTURE_MPLANE) がない場合はスキップ
-                                    if not (caps_val & 0x04000001):
-                                        continue
-                            except Exception:
-                                pass
 
-                        # フィルタを通過したノードのみ VideoCapture 試行
-                        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-                        if cap and cap.isOpened():
-                            ret, _ = cap.read()
-                            if ret:
-                                devices.append((idx, f"[{idx}] {cam_name}"))
-                            cap.release()
+                        if any(k in cam_name.lower() for k in ignore_keywords):
+                            continue
+
+                        port_info = ""
+                        if by_path:
+                            bname = os.path.basename(by_path)
+                            if "usb-" in bname:
+                                u_part = bname.split("usb-")[-1].split(":")[0]
+                                port_info = f" (Port {u_part})"
+
+                        devices.append((idx, f"[{idx}] {cam_name}{port_info}", by_path))
                     except Exception:
                         pass
     elif sys.platform.startswith("win"):
-        # Windows: PowerShell で PnP カメラデバイス名を取得
         names_from_ps = []
         try:
             ps_cmd = 'Get-CimInstance Win32_PnPEntity | Where-Object {$_.PNPClass -eq "Camera" -or $_.PNPClass -eq "Image"} | Select-Object -ExpandProperty Name'
-            res = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=3)
+            res = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=2)
             if res.returncode == 0 and res.stdout:
                 names_from_ps = [line.strip() for line in res.stdout.splitlines() if line.strip()]
         except Exception:
             pass
 
-        open_indices = []
-        # Windows では必要最小限のインデックス範囲でスキャン
-        max_scan = max(len(names_from_ps) + 2, 4)
-        for idx in range(min(max_scan, 8)):
-            try:
-                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
-                if cap and cap.isOpened():
-                    ret, _ = cap.read()
-                    if ret:
-                        open_indices.append(idx)
-                    cap.release()
-            except Exception:
-                pass
+        if names_from_ps:
+            for idx, d_name in enumerate(names_from_ps):
+                devices.append((idx, f"[{idx}] {d_name}", ""))
 
-        for i, idx in enumerate(open_indices):
-            if i < len(names_from_ps):
-                d_name = names_from_ps[i]
-            else:
-                d_name = f"USB Camera {idx}"
-            devices.append((idx, f"[{idx}] {d_name}"))
+    existing_indices = {d[0] for d in devices}
+    for idx in range(4):
+        if idx not in existing_indices:
+            devices.append((idx, f"[{idx}] カメラ (インデックス {idx})", ""))
 
-    # 万が一何も検出されなかった場合のデフォルトリスト (インデックス 0〜3)
-    if not devices:
-        for idx in range(4):
-            devices.append((idx, f"[{idx}] カメラ (インデックス {idx})"))
-
+    devices.sort(key=lambda x: x[0])
     return devices
 
 
@@ -443,6 +420,7 @@ class SettingsDialog(tk.Toplevel):
         # UI変数 (各タブ共通)
         self.available_cams = []
         self.cam_idx_var = tk.IntVar()
+        self.cam_by_path_var = tk.StringVar(value="")
         self.cam_idx_str_var = tk.StringVar()
         self._scan_status_var = tk.StringVar(value="")
 
@@ -769,18 +747,32 @@ class SettingsDialog(tk.Toplevel):
             if not self.winfo_exists():
                 return
             self.available_cams = cams
-            values = [display_name for _, display_name in cams]
+            values = [display_name for _, display_name, _ in cams]
             self.cb_cam_idx.config(values=values)
             
-            # 現在のインデックスに合う選択肢をセット
+            # 現在の by_path またはインデックスに合う選択肢をセット
+            cur_bypath = self.cam_by_path_var.get() or self.temp_data.get("camera", {}).get("by_path", "")
             cur_idx = self.cam_idx_var.get()
             matched_str = None
-            for idx, display_name in cams:
-                if idx == cur_idx:
-                    matched_str = display_name
-                    break
+            found_bypath = ""
+            if cur_bypath:
+                for idx, display_name, bpath in cams:
+                    if bpath == cur_bypath:
+                        matched_str = display_name
+                        found_bypath = bpath
+                        cur_idx = idx
+                        self.cam_idx_var.set(idx)
+                        break
+            if not matched_str:
+                for idx, display_name, bpath in cams:
+                    if idx == cur_idx:
+                        matched_str = display_name
+                        found_bypath = bpath
+                        break
             if matched_str:
                 self.cam_idx_str_var.set(matched_str)
+                if found_bypath:
+                    self.cam_by_path_var.set(found_bypath)
             elif values:
                 self.cam_idx_str_var.set(values[0])
                 self._on_cam_selected(None)
@@ -792,13 +784,12 @@ class SettingsDialog(tk.Toplevel):
 
     def _on_cam_selected(self, event):
         sel_str = self.cam_idx_str_var.get()
-        if sel_str and sel_str.startswith("["):
-            try:
-                idx_num = int(sel_str.split("]")[0].replace("[", ""))
-                self.cam_idx_var.set(idx_num)
+        for idx_val, display_name, bpath_val in self.available_cams:
+            if display_name == sel_str:
+                self.cam_idx_var.set(idx_val)
+                self.cam_by_path_var.set(bpath_val)
                 self._mark_changed()
-            except ValueError:
-                pass
+                break
 
     def _start_cam_preview(self):
         self._stop_cam_preview()
@@ -1719,6 +1710,7 @@ class SettingsDialog(tk.Toplevel):
         cam = d.get("camera", {})
         cur_idx = cam.get("index", 0)
         self.cam_idx_var.set(cur_idx)
+        self.cam_by_path_var.set(cam.get("by_path", ""))
         self.cam_idx_str_var.set(f"[{cur_idx}] カメラ (インデックス {cur_idx})")
         for k, var in self.cam_props.items():
             if k in cam:
@@ -1781,6 +1773,7 @@ class SettingsDialog(tk.Toplevel):
         
         # カメラ
         d["camera"]["index"] = self.cam_idx_var.get()
+        d["camera"]["by_path"] = self.cam_by_path_var.get()
         for k, var in self.cam_props.items():
             try:
                 v = var.get()

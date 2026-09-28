@@ -419,6 +419,20 @@ class InspectionEngine:
     @staticmethod
     def open_camera(index, cam_cfg):
         """設定に従いカメラを開く (inspection_app 準拠)"""
+        target_idx = index
+        b_path = cam_cfg.get("by_path")
+        if platform.system() != "Windows" and b_path and os.path.exists(b_path):
+            try:
+                real_p = os.path.realpath(b_path)
+                bname = os.path.basename(real_p)
+                if bname.startswith("video") and bname[5:].isdigit():
+                    resolved_idx = int(bname[5:])
+                    if resolved_idx != target_idx:
+                        print(f"カメラ物理ポートからインデックスを動的解決: {target_idx} -> {resolved_idx} ({b_path})")
+                    target_idx = resolved_idx
+            except Exception:
+                pass
+
         res = cam_cfg.get("resolution", "1920x1080")
         try:
             w, h = map(int, res.split("x"))
@@ -428,13 +442,13 @@ class InspectionEngine:
         cap = None
         backend = cv2.CAP_V4L2 if platform.system() != "Windows" else cv2.CAP_ANY
         try:
-            cap = cv2.VideoCapture(index, backend)
+            cap = cv2.VideoCapture(target_idx, backend)
         except Exception:
-            cap = cv2.VideoCapture(index)
+            cap = cv2.VideoCapture(target_idx)
 
         if cap and cap.isOpened():
             backend_name = cap.getBackendName() if hasattr(cap, "getBackendName") else "Unknown"
-            print(f"カメラ初期化成功 (Index: {index}, Backend: {backend_name})")
+            print(f"カメラ初期化成功 (Index: {target_idx}, Backend: {backend_name})")
             try:
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
